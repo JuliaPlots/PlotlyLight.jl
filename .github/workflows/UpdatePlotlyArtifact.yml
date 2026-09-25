@@ -32,7 +32,7 @@ jobs:
       update: ${{ steps.versions.outputs.update }}
       latest: ${{ steps.versions.outputs.latest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Compare PlotlyLight's plotly.js version to the latest release
         id: versions
         env:
@@ -58,13 +58,13 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PLOTLY_VERSION: ${{ needs.check.outputs.latest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ssh-key: ${{ secrets.DEPLOY_KEY }}
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v3
         with:
           version: '1'
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
 
       - name: Build artifact, upload to the `artifacts` release, and update Artifacts.toml
         run: julia --color=yes deps/artifacts.jl
