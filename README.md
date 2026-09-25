@@ -12,7 +12,7 @@
 
 <br><br>
 
-## ✨ Features
+## Features
 
 - 🚀 Fastest time-to-first-plot in Julia!
 - 🌐 Use the [Plotly.js Javascript documentation](https://plotly.com/javascript/) directly. No magic syntax.
@@ -22,7 +22,7 @@
 
 <br><br>
 
-## 🚀 Quickstart
+## Quickstart
 
 ```julia
 using PlotlyLight
