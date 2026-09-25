@@ -55,8 +55,9 @@ end
     @test type(rand(Float32, 10)) == Float32
     @test type([1.0, 2.0], PlotlyLight.Compression(float_types=(Float64, Float32))) == Float32
     @test type([-1, 300]) == Int16
-    @test type([0, 2^40]) == Float32
-    @test type([2^40, 2^40 + 1000]) == Float64
+    big = Int64(2)^40  # not `2^40`, which overflows where Int is Int32 (32-bit)
+    @test type([0, big]) == Float32
+    @test type([big, big + 1000]) == Float64
 
     # Decoders are on the page exactly once when compression is on, however it was turned on
     decoders(x) = count(r"<script>\s*function base64ToBytes", html(x))
