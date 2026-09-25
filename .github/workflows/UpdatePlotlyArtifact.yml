@@ -1,8 +1,9 @@
 name: Update Plotly Artifact
 
-# Uses only GITHUB_TOKEN: deps/artifacts.jl uploads the artifact tarball to the `artifacts` release, and Registrator
+# deps/artifacts.jl uploads the artifact tarball to the `artifacts` release with GITHUB_TOKEN, and Registrator
 # accepts `@JuliaRegistrator register` comments from github-actions[bot].
-# Pushes made with GITHUB_TOKEN don't trigger CI, so tests run here before the version bump.
+# The version bump is pushed with the DEPLOY_KEY secret (a write-access deploy key), since deploy keys
+# bypass the master ruleset's pull request requirement.
 
 on:
   schedule:
@@ -58,6 +59,8 @@ jobs:
       PLOTLY_VERSION: ${{ needs.check.outputs.latest }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
