@@ -104,7 +104,7 @@ _fits(::Type{T}, x, tol) where {T} = all(v -> !isfinite(v) || abs(Float64(T(v)) 
 #------------------------------------------------------------------------------# JS decoders
 # Injected into the page when compression is on.  DecompressionStream is asynchronous, so the calls written by
 # `json` are `await`ed inside NewPlotScript's async draw function.
-COMPRESSION_SRC = raw"""
+COMPRESSION_SRC = h.script(raw"""
     function base64ToBytes(s) {
         if (Uint8Array.fromBase64) return Uint8Array.fromBase64(s);
         const bin = atob(s), bytes = new Uint8Array(bin.length);
@@ -132,4 +132,4 @@ COMPRESSION_SRC = raw"""
     async function strVecFromBase64(base64_dat) {
         return JSON.parse(new TextDecoder().decode(await inflateBase64(base64_dat)));
     }
-    """
+    """)
