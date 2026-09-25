@@ -1,7 +1,7 @@
 name = "PlotlyLight"
 uuid = "ca7969ec-10b3-423e-8d99-40f33abb42bf"
 authors = ["joshday <emailjoshday@gmail.com>"]
-version = "0.13.2"
+version = "0.14.0"
 
 [deps]
 Artifacts = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
