@@ -60,7 +60,7 @@ end
     @test type([big, big + 1000]) == Float64
 
     # Decoders are on the page exactly once when compression is on, however it was turned on
-    decoders(x) = count(r"<script>\s*function base64ToBytes", html(x))
+    decoders(x) = count(r"<script>\s*window.base64ToBytes", html(x))
     preset.display.compress!(true); preset.display.compress!(true)
     @test settings.compression.on
     @test decoders(plot.scatter(y=1:3)) == 1

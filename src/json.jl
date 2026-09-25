@@ -105,19 +105,21 @@ _fits(::Type{T}, x, tol) where {T} = all(v -> !isfinite(v) || abs(Float64(T(v)) 
 
 #------------------------------------------------------------------------------# JS decoders
 # Injected into the page when compression is on.  DecompressionStream is asynchronous, so the calls written by
-# `json` are `await`ed inside NewPlotScript's async draw function.
+# `json` are `await`ed inside NewPlotScript's async draw function.  Attached to `window` because some hosts
+# (e.g. Pluto) run each <script> inside its own function, where plain `function` declarations wouldn't be
+# visible to the plot's script.
 COMPRESSION_SRC = h.script(raw"""
-    function base64ToBytes(s) {
+    window.base64ToBytes = function(s) {
         if (Uint8Array.fromBase64) return Uint8Array.fromBase64(s);
         const bin = atob(s), bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
         return bytes;
     }
-    function inflateBase64(base64_dat) {
+    window.inflateBase64 = function(base64_dat) {
         const stream = new Response(base64ToBytes(base64_dat)).body.pipeThrough(new DecompressionStream("deflate"));
         return new Response(stream).arrayBuffer();
     }
-    async function numArrFromBase64(T, base64_dat, ...dims) {
+    window.numArrFromBase64 = async function(T, base64_dat, ...dims) {
         const arr = new T(await inflateBase64(base64_dat));
         if (dims.length == 1) {
             return arr;
@@ -131,7 +133,7 @@ COMPRESSION_SRC = h.script(raw"""
             throw new Error(`>2 dims not implemented.`);
         }
     }
-    async function strVecFromBase64(base64_dat) {
+    window.strVecFromBase64 = async function(base64_dat) {
         return JSON.parse(new TextDecoder().decode(await inflateBase64(base64_dat)));
     }
     """)

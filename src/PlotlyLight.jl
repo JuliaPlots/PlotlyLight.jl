@@ -112,13 +112,15 @@ Base.getproperty(::typeof(plot), type::Symbol) = (; kw...) -> plot(; type=type, 
 #-----------------------------------------------------------------------------# NewPlotScript
 # `<script>` that starts loading `srcs` (once per page, in order) and records a promise for each in
 # `window.__plotlylight_scripts`.  A `<script src>` tag per plot would block the page and re-run plotly.js for every plot.
+# `async = false` downloads in parallel but runs in order.  A script that fails to load (e.g. a blocked MathJax)
+# still resolves, so it doesn't stop plotly.js or the plots.
 load_scripts(srcs) = h.script("""(srcs => {
     const loaded = window.__plotlylight_scripts || (window.__plotlylight_scripts = {});
-    srcs.reduce((prev, src) => loaded[src] || (loaded[src] = prev.then(() => new Promise((resolve, reject) => {
+    for (const src of srcs) loaded[src] = loaded[src] || new Promise(resolve => {
         const s = document.createElement("script");
-        s.src = src; s.onload = resolve; s.onerror = reject;
+        s.src = src; s.async = false; s.onload = s.onerror = resolve;
         document.head.appendChild(s);
-    }))), Promise.resolve());
+    });
 })($(JSON3.write(srcs)))""")
 
 # PlotlyLight representation of: <script>Plotly.newPlot("$id", $data, $layout, $config)</script>
