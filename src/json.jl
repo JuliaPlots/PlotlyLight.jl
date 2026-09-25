@@ -13,7 +13,9 @@ json(io::IO, x) = json_join(io, x, ',', '[', ']')  # ***FALLBACK METHOD***
 json(x) = sprint(json, x)
 
 # Strings
-json(io::IO, x::Union{AbstractChar, AbstractString, Symbol}) = print(io, '"', x, '"')
+# JSON-escaped, and `<` as `<` so data can't end the surrounding `<script>` (e.g. "</script>").
+# (HTML escaping like `Cobweb.escape` is wrong here: entities aren't decoded inside `<script>`.)
+json(io::IO, x::Union{AbstractChar, AbstractString, Symbol}) = print(io, replace(JSON3.write(string(x)), '<' => "\\u003c"))
 json(io::IO, x::DateTime) = json(io, Dates.format(x, "YYYY-mm-dd HH:MM:SS"))
 json(io::IO, x::Date) = json(io, Dates.format(x, "YYYY-mm-dd"))
 

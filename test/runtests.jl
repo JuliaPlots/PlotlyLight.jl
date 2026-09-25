@@ -1,4 +1,4 @@
-using PlotlyLight, Cobweb, Test, Aqua, Dates, JSON3
+using PlotlyLight, Cobweb, Test, Aqua, Dates, JSON3, Random
 using PlotlyLight: settings, Plot, json
 
 html(x) = repr("text/html", x)
@@ -21,6 +21,11 @@ html(x) = repr("text/html", x)
     @test json(Inf) == "null"
     @test json(-Inf) == "null"
     @test json(DateTime(2021,1,1)) == "\"2021-01-01 00:00:00\""
+    # Strings are JS-escaped, and can't close the surrounding <script>
+    @test json("say \"hi\"") == "\"say \\\"hi\\\"\""
+    @test json("a\nb") == "\"a\\nb\""
+    @test json("</script><br>") == "\"\\u003c/script>\\u003cbr>\""
+    @test json(:x) == "\"x\""
 end
 
 @testset "compression" begin
@@ -53,8 +58,18 @@ end
     @test type([0, 2^40]) == Float32
     @test type([2^40, 2^40 + 1000]) == Float64
 
-    preset.display.compress!(true)
+    # Decoders are on the page exactly once when compression is on, however it was turned on
+    decoders(x) = count(r"<script>\s*function base64ToBytes", html(x))
+    preset.display.compress!(true); preset.display.compress!(true)
     @test settings.compression.on
+    @test decoders(plot.scatter(y=1:3)) == 1
+    @test decoders(PlotlyLight.html_page(plot.scatter(y=1:3))) == 1
+    preset.display.compress!(false)
+    @test decoders(plot.scatter(y=1:3)) == 0
+    PlotlyLight.with_settings(compression = PlotlyLight.Compression(on=true)) do _
+        @test decoders(plot.scatter(y=1:3)) == 1
+    end
+    preset.display.compress!(true)
     @test occursin("await numArrFromBase64(", html(plot.scatter(y=1:100)))
 end
 
@@ -118,6 +133,8 @@ end
     @test repr(p) == "Plot(scatter, bar)"
     @test repr(Plot()) == "Plot()"
     @test repr("text/plain", p) == "PlotlyLight.Plot with 2 traces\n  1. scatter: x, y\n  2. bar: y"
+    Random.seed!(1); a = rand(); Random.seed!(1); html(p); b = rand()
+    @test a == b  # displaying a plot doesn't consume the global RNG
     @test repr("text/plain", Plot()) == "PlotlyLight.Plot with 0 traces"
 
     # External scripts are loaded once per page by the plot's script, not a `<script src>` per plot

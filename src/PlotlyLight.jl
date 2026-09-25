@@ -5,6 +5,7 @@ using Base64
 using Downloads: download
 using Dates
 using REPL
+using Random: RandomDevice
 
 using JSON3: JSON3
 using EasyConfig: Config
@@ -140,14 +141,18 @@ function Base.show(io::IO, ::MIME"text/html", o::NewPlotScript)
 end
 
 #-----------------------------------------------------------------------------# display
-rand_id() = "plotlylight-" * join(rand('a':'z', 10))
+# From the OS's entropy, not the global RNG: displaying a plot shouldn't change the user's random numbers
+rand_id() = "plotlylight-" * join(rand(RandomDevice(), 'a':'z', 10))
 
 # `src` of a `<script src=...>` Node, otherwise `nothing`
 script_src(x) = x isa Node && Cobweb.tag(x) == :script ? get(Cobweb.attrs(x), :src, nothing) : nothing
 
+# Scripts every plot needs: `settings.src_inject`, compression decoders (if on), and plotly.js
+page_scripts(s::Settings) = [s.src_inject..., (s.compression.on ? (COMPRESSION_SRC,) : ())..., s.src]
+
 # External scripts are loaded once per page by `load_scripts`; everything else is included as-is.
 function html_div(o::Plot, id=rand_id())
-    scripts = [settings.src_inject..., settings.src]
+    scripts = page_scripts(settings)
     srcs = filter(!isnothing, script_src.(scripts))
     inline = filter(x -> isnothing(script_src(x)), scripts)
     loader = isempty(srcs) ? () : (load_scripts(srcs),)
@@ -162,8 +167,7 @@ function html_page(o::Plot, id=rand_id())
             h.meta(name="description", content="PlotlyLight.jl Plot"),
             h.title("PlotlyLight.jl"),
             settings.page_css,
-            settings.src_inject...,
-            settings.src
+            page_scripts(settings)...
         ),
         h.body(h.div(class="plotlylight-parent", settings.div(; id), NewPlotScript(o, settings, id)))
     )
@@ -228,7 +232,7 @@ preset = (
     display = (
         fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),
         mathjax!        = () -> (push!(settings.src_inject, h.script(src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"))),
-        compress!       = (on=true) -> (settings.compression.on = on; pushfirst!(settings.src_inject, COMPRESSION_SRC))
+        compress!       = (on=true) -> (settings.compression.on = on)
     )
 )
 
