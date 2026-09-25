@@ -1,42 +1,94 @@
 name: Update Plotly Artifact
 
+# deps/artifacts.jl uploads the artifact tarball to the `artifacts` release with GITHUB_TOKEN, and Registrator
+# accepts `@JuliaRegistrator register` comments from github-actions[bot].
+# The version bump is pushed with the DEPLOY_KEY secret (a write-access deploy key), since deploy keys
+# bypass the master ruleset's pull request requirement.
+
 on:
   schedule:
-    # Run once daily at 00:00 UTC
-    - cron: '0 0 * * *'
+    - cron: '59 6 * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Rebuild and release even if plotly.js is unchanged'
+        type: boolean
+        default: false
+
+concurrency:
+  group: update-plotly-artifact
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  update-artifact:
-    # Disable action for now until I have time to fix it
-    if: ${{ false }}
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      update: ${{ steps.versions.outputs.update }}
+      latest: ${{ steps.versions.outputs.latest }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare PlotlyLight's plotly.js version to the latest release
+        id: versions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          latest=$(gh api repos/plotly/plotly.js/releases/latest --jq .tag_name)
+          url=$(sed -nE '/^ *url = /{s/.*"(.*)"/\1/p;q;}' Artifacts.toml)
+          current=$(curl -fsSL "$url" | tar -xzOf - version.txt)
+          echo "current=$current latest=$latest"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          if [[ "$current" != "$latest" || "$FORCE" == "true" ]]; then
+            echo "update=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.update == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     env:
-      GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+      PLOTLY_VERSION: ${{ needs.check.outputs.latest }}
     steps:
-      - uses: actions/checkout@v3
-      - uses: julia-actions/setup-julia@v1
-      - name: Configure git for HTTPS authentication
-        run: |
-          git config --global url."https://${{ secrets.GIST_TOKEN }}@github.com/".insteadOf "git@github.com:"
-          git config --global url."https://${{ secrets.GIST_TOKEN }}@gist.github.com/".insteadOf "git@gist.github.com:"
-      - run: julia deps/artifacts.jl
-      - name: Check if Artifacts.toml changed
-        id: check-changes
-        run: |
-          if git diff --quiet Artifacts.toml; then
-            echo "changed=false" >> $GITHUB_OUTPUT
-          else
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-      - name: Create Pull Request
-        if: steps.check-changes.outputs.changed == 'true'
-        uses: peter-evans/create-pull-request@v5
+      - uses: actions/checkout@v4
         with:
-          commit-message: 'chore: update Plotly artifact'
-          title: 'chore: update Plotly artifact'
-          body: 'Automated update of Plotly.js artifact'
-          branch: update-plotly-artifact
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1'
+      - uses: julia-actions/cache@v2
+
+      - name: Build artifact, upload to the `artifacts` release, and update Artifacts.toml
+        run: julia --color=yes deps/artifacts.jl
+
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          coverage: false
+
+      - name: Bump patch version and push
+        id: bump
+        run: |
+          old=$(sed -nE 's/^version = "(.*)"/\1/p' Project.toml)
+          new=$(awk -F. -v OFS=. '{$3 += 1; print}' <<< "$old")
+          sed -i -E "s/^version = \".*\"/version = \"$new\"/" Project.toml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Project.toml Artifacts.toml
+          git commit -m "Update plotly.js to $PLOTLY_VERSION (v$new)"
+          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Register with JuliaRegistrator
+        env:
+          SHA: ${{ steps.bump.outputs.sha }}
+        run: |
+          body=$(printf '@JuliaRegistrator register\n\nRelease notes:\n\nUpdate plotly.js to %s.\n' "$PLOTLY_VERSION")
+          gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/comments" -f body="$body"

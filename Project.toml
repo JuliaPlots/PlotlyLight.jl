@@ -17,7 +17,7 @@ REPL = "3fa0cd96-eef1-5676-8a61-b3b8758bbffb"
 [compat]
 Aqua = "0.8"
 Artifacts = "1"
-Base64 = "1.11.0"
+Base64 = "1"
 Cobweb = "0.6, 0.7"
 CodecZlib = "0.7.6"
 Dates = "1"
