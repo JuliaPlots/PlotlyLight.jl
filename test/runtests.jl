@@ -21,6 +21,12 @@ html(x) = repr("text/html", x)
     @test json(Inf) == "null"
     @test json(-Inf) == "null"
     @test json(DateTime(2021,1,1)) == "\"2021-01-01 00:00:00\""
+    preset.display.compress!(true)
+    @test json(Int[1, 2]) == "numArrFromBase64(Uint8Array,'eJxjZAIAAAYABA==',2)"
+    @test json(Int[1 2; 3 4]) == "numArrFromBase64(Uint8Array,'eJxjZGJmAQAAGAAL',2,2)"
+    @test json(Float64[1, 2]) == "numArrFromBase64(Float32Array,'eJxjYGiwZ2BgcAAABIMBAA==',2)"
+    @test json(Float64[1 2; 3 4]) == "numArrFromBase64(Float32Array,'eJxjYGiwZ2BgcAAiIG5wAAAQgwJA',2,2)"
+    @test json(["a", "b"]) == "strVecFromBase64('eJxLTAIAASYAxA==',numArrFromBase64(Uint8Array,'eJxjZAQAAAUAAw==',2))"
 end
 
 #-----------------------------------------------------------------------------# Plot methods

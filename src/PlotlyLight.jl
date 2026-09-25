@@ -1,6 +1,7 @@
 module PlotlyLight
 
 using Artifacts: @artifact_str
+using Base64
 using Downloads: download
 using Dates
 using REPL
@@ -8,6 +9,7 @@ using REPL
 using JSON3: JSON3
 using EasyConfig: Config
 using Cobweb: Cobweb, h, IFrame, Node
+using CodecZlib
 
 #-----------------------------------------------------------------------------# exports
 export Config, preset, Plot, plot
@@ -42,6 +44,7 @@ Base.@kwdef mutable struct Settings
     use_iframe::Bool        = false
     iframe_style            = "display:block; border:none; min-height:350px; min-width:350px; width:100%; height:100%"
     src_inject::Vector      = []
+    compress::Bool          = false
 end
 settings::Settings = Settings()
 
@@ -61,6 +64,14 @@ function with_settings(f; kw...)
     finally
         global settings = old
     end
+end
+
+function get_src_inject(s::Settings)
+    src_inject = s.src_inject
+    if s.compress
+        src_inject = union(src_inject, json_compression_src_inject)
+    end
+    return src_inject
 end
 
 #-----------------------------------------------------------------------------# utils/other
@@ -122,7 +133,7 @@ end
 rand_id() = "plotlyx-" * join(rand('a':'z', 10))
 
 function html_div(o::Plot, id=rand_id())
-    h.div(class="plotlylight-parent", settings.src_inject..., settings.src, settings.div(; id), NewPlotScript(o, settings, id))
+    h.div(class="plotlylight-parent", get_src_inject(settings)..., settings.src, settings.div(; id), NewPlotScript(o, settings, id))
 end
 
 function html_page(o::Plot, id=rand_id())
@@ -133,7 +144,7 @@ function html_page(o::Plot, id=rand_id())
             h.meta(name="description", content="PlotlyLight.jl Plot"),
             h.title("PlotlyLight.jl"),
             settings.page_css,
-            settings.src_inject...,
+            get_src_inject(settings)...,
             settings.src
         ),
         h.body(h.div(class="plotlylight-parent", settings.div(; id), NewPlotScript(o, settings, id)))
@@ -188,6 +199,7 @@ preset = (
     display = (
         fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),
         mathjax!        = () -> (push!(settings.src_inject, h.script(src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"))),
+        compress!       = (enabled=true) -> (settings.compress = enabled)
     )
 )
 
