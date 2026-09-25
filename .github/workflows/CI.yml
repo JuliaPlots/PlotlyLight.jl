@@ -7,10 +7,12 @@ jobs:
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }} - ${{ github.event_name }}
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.version == 'nightly' }}
     strategy:
       fail-fast: false
       matrix:
         version:
+          - 'lts'
           - '1' # automatically expands to the latest stable 1.x release of Julia
           - 'nightly'
         os:
@@ -25,7 +27,7 @@ jobs:
             arch: x86
     steps:
       - uses: actions/checkout@v3
-      - uses: julia-actions/setup-julia@v1
+      - uses: julia-actions/setup-julia@v2
         with:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
@@ -51,3 +53,14 @@ jobs:
           # possibly other stuff
           token: ${{ secrets.CODECOV_TOKEN }}
         if: matrix.os == 'ubuntu-latest' && matrix.arch == 'x64'
+
+  # The one check the master ruleset requires.  Nightly failures don't count (continue-on-error).
+  ci-success:
+    name: CI success
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every non-nightly test job passed
+        if: needs.test.result != 'success'
+        run: exit 1
