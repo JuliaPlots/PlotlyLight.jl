@@ -13,9 +13,9 @@ json(io::IO, x) = json_join(io, x, ',', '[', ']')  # ***FALLBACK METHOD***
 json(x) = sprint(json, x)
 
 # Strings
-# JSON-escaped, and `<` as `<` so data can't end the surrounding `<script>` (e.g. "</script>").
+# JSON-escaped, and `<` as `\u003c` so data can't end the surrounding `<script>` (e.g. "</script>").
 # (HTML escaping like `Cobweb.escape` is wrong here: entities aren't decoded inside `<script>`.)
-json(io::IO, x::Union{AbstractChar, AbstractString, Symbol}) = print(io, replace(JSON3.write(string(x)), '<' => "\\u003c"))
+json(io::IO, x::Union{AbstractChar, AbstractString, Symbol}) = print(io, replace(JSON.json(string(x)), '<' => "\\u003c"))
 json(io::IO, x::DateTime) = json(io, Dates.format(x, "YYYY-mm-dd HH:MM:SS"))
 json(io::IO, x::Date) = json(io, Dates.format(x, "YYYY-mm-dd"))
 
@@ -49,7 +49,7 @@ end
 function json(io::IO, x::AbstractVector{<:AbstractString})
     c = get(io, :plotlylight_compression, nothing)
     (isnothing(c) || length(x) < c.min_length) && return json_array(io, x)
-    print(io, "await strVecFromBase64('", base64encode(zlib_compress(Vector{UInt8}(JSON3.write(x)))), "')")
+    print(io, "await strVecFromBase64('", base64encode(zlib_compress(Vector{UInt8}(JSON.json(x)))), "')")
 end
 
 # zlib-format deflate (what the browser's `DecompressionStream("deflate")` reads) via zlib's `compress2`

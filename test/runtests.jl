@@ -1,4 +1,4 @@
-using PlotlyLight, Cobweb, Test, Aqua, Dates, JSON3, Random
+using PlotlyLight, Cobweb, Test, Aqua, Dates, JSON, Random
 using PlotlyLight: settings, Plot, json
 
 html(x) = repr("text/html", x)
@@ -104,7 +104,7 @@ end
 @testset "plot" begin
     @test_warn "`scatter` does not have attribute `X`" plot.scatter(X=1:10);
     @test_nowarn plot.scatter(x=1:10);
-    @test contains(JSON3.write(plot(y=1:10)), "scatter")
+    @test contains(JSON.json(plot(y=1:10)), "scatter")
 end
 
 @testset "settings" begin
@@ -126,7 +126,7 @@ end
 @testset "other" begin
     @test propertynames(Plot()) isa Vector{Symbol}
     @test all(x in propertynames(Plot()) for x in propertynames(plot))
-    @test propertynames(JSON3.read(JSON3.write(Plot()))) == [:data, :layout, :config]
+    @test collect(propertynames(JSON.parse(JSON.json(Plot())))) == [:data, :layout, :config]
 end
 
 @testset "show/display" begin
@@ -141,6 +141,9 @@ end
     # External scripts are loaded once per page by the plot's script, not a `<script src>` per plot
     s = html(p)
     @test !occursin("<script src", s)
+    # The div explains itself until the plot draws, and failures replace it with the reason
+    @test occursin("class=\"plotlylight-fallback\"", s)
+    @test occursin("PlotlyLight couldn't draw this plot: ", s)
     @test occursin("\"$(PlotlyLight.plotly.url)\"", s)
     # ...but full pages (save, REPL, Jupyter iframe) load them in <head>
     @test occursin("<script src=\"$(PlotlyLight.plotly.url)\"", html(PlotlyLight.html_page(p)))

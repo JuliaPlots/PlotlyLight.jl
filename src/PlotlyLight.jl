@@ -7,7 +7,7 @@ using Dates
 using REPL
 using Random: RandomDevice
 
-using JSON3: JSON3
+using JSON: JSON
 using EasyConfig: Config
 using Cobweb: Cobweb, h, IFrame, Node
 using Zlib_jll: libz
@@ -22,7 +22,7 @@ Base.@kwdef struct PlotlyArtifacts
     version::VersionNumber  = VersionNumber(read(artifact("version.txt"), String))
     url::String             = "https://cdn.plot.ly/plotly-$version.min.js"
     path::String            = artifact("plotly.min.js")
-    schema::JSON3.Object    = JSON3.read(read(artifact("plot-schema.json"), String))
+    schema::JSON.Object{String, Any} = JSON.parsefile(artifact("plot-schema.json"))
     templates::Dict{String,String} = Dict(t => artifact("templates", t) for t in readdir(artifact("templates")))
 end
 Base.show(io::IO, p::PlotlyArtifacts) = print(io, "PlotlyArtifacts: v$(p.version)")
@@ -95,7 +95,7 @@ save(file::AbstractString, p::Plot) = save(p, file)
 (p::Plot)(p2::Plot) = merge!(p, p2)
 
 Base.getproperty(p::Plot, x::Symbol) = x in fieldnames(Plot) ? getfield(p, x) : (; kw...) -> p(plot(; type=x, kw...))
-Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., keys(plotly.schema.traces)...)
+Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., Symbol.(keys(plotly.schema.traces))...)
 
 Base.merge!(a::Plot, b::Plot) = (append!(a.data, b.data); merge!(a.layout, b.layout); merge!(a.config, b.config); a)
 
@@ -105,23 +105,26 @@ function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
     data = isempty(kw) ? Config[] : [Config(; type, kw...)]
     Plot(data, layout, config)
 end
-Base.propertynames(::typeof(plot)) = keys(plotly.schema.traces)
+Base.propertynames(::typeof(plot)) = Symbol.(keys(plotly.schema.traces))
 Base.getproperty(::typeof(plot), type::Symbol) = (; kw...) -> plot(; type=type, kw...)
 
 
 #-----------------------------------------------------------------------------# NewPlotScript
-# `<script>` that starts loading `srcs` (once per page, in order) and records a promise for each in
-# `window.__plotlylight_scripts`.  A `<script src>` tag per plot would block the page and re-run plotly.js for every plot.
-# `async = false` downloads in parallel but runs in order.  A script that fails to load (e.g. a blocked MathJax)
-# still resolves, so it doesn't stop plotly.js or the plots.
+# <script> that starts loading `srcs` (once per page, in order), records promises in `window.__plotlylight_scripts`.
 load_scripts(srcs) = h.script("""(srcs => {
     const loaded = window.__plotlylight_scripts || (window.__plotlylight_scripts = {});
+    const failed = window.__plotlylight_failed || (window.__plotlylight_failed = []);
     for (const src of srcs) loaded[src] = loaded[src] || new Promise(resolve => {
         const s = document.createElement("script");
-        s.src = src; s.async = false; s.onload = s.onerror = resolve;
+        s.src = src; s.async = false; s.onload = resolve;
+        s.onerror = () => { failed.push(src); resolve(); };
         document.head.appendChild(s);
     });
-})($(JSON3.write(srcs)))""")
+})($(JSON.json(srcs)))""")
+
+# Static content of the plot's div, replaced once the plot draws
+plot_fallback() = h.p("Loading plot…  If this message stays, JavaScript didn't run here (e.g. an untrusted notebook).";
+    class="plotlylight-fallback", style="font-family:sans-serif; color:#888;")
 
 # PlotlyLight representation of: <script>Plotly.newPlot("$id", $data, $layout, $config)</script>
 struct NewPlotScript
@@ -134,12 +137,26 @@ function Base.show(io::IO, ::MIME"text/html", o::NewPlotScript)
     config = merge(o.settings.config, o.plot.config)
     c = o.settings.compression
     jsonio = c.on ? IOContext(io, :plotlylight_compression => c) : io
-    print(io, "<script>(async () => {await Promise.all(Object.values(window.__plotlylight_scripts || {}));")
-    print(io, "Plotly.newPlot(\"", o.id, "\",")
+    print(io, """<script>(async () => {
+    const div = document.getElementById("$(o.id)");
+    try {
+        await Promise.all(Object.values(window.__plotlylight_scripts || {}));
+        if (typeof Plotly === "undefined") {
+            const failed = window.__plotlylight_failed || [];
+            throw new Error("plotly.js didn't load" + (failed.length ? " (failed: " + failed.join(", ") + ")" : "") +
+                ".  If you're offline, try `PlotlyLight.preset.source.standalone!()`.");
+        }
+        div.replaceChildren();
+        await Plotly.newPlot(div, """)
     json(jsonio, o.plot.data); print(io, ',')
     json(jsonio, layout); print(io, ',')
     json(jsonio, config)
-    print(io, ")})()</script>")
+    print(io, """);
+    } catch (e) {
+        div.replaceChildren(Object.assign(document.createElement("pre"),
+            {textContent: "PlotlyLight couldn't draw this plot: " + e.message, style: "color:#c00; white-space:pre-wrap;"}));
+    }
+})()</script>""")
 end
 
 #-----------------------------------------------------------------------------# display
@@ -158,7 +175,7 @@ function html_div(o::Plot, id=rand_id())
     srcs = filter(!isnothing, script_src.(scripts))
     inline = filter(x -> isnothing(script_src(x)), scripts)
     loader = isempty(srcs) ? () : (load_scripts(srcs),)
-    h.div(class="plotlylight-parent", inline..., loader..., settings.div(; id), NewPlotScript(o, settings, id))
+    h.div(class="plotlylight-parent", inline..., loader..., settings.div(plot_fallback(); id), NewPlotScript(o, settings, id))
 end
 
 function html_page(o::Plot, id=rand_id())
@@ -171,7 +188,7 @@ function html_page(o::Plot, id=rand_id())
             settings.page_css,
             page_scripts(settings)...
         ),
-        h.body(h.div(class="plotlylight-parent", settings.div(; id), NewPlotScript(o, settings, id)))
+        h.body(h.div(class="plotlylight-parent", settings.div(plot_fallback(); id), NewPlotScript(o, settings, id)))
     )
 end
 
@@ -209,7 +226,7 @@ Base.display(::REPL.REPLDisplay, o::Plot) = Cobweb.preview(html_page(o); reuse=s
 # `preset_src_<X>` overwrites `settings.src`
 # `preset_display_<X>` overwrites `settings.config.responsive`, `settings.div`, `settings.layout.[width, height]`
 
-template!(t) = (settings.layout.template = JSON3.read(read(plotly.templates["$t.json"])); nothing)
+template!(t) = (settings.layout.template = JSON.parsefile(plotly.templates["$t.json"]); nothing)
 
 preset = (
     template = (
