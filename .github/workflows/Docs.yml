@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - master # update to match your development branch (master, main, dev, trunk, ...)
-    tags: '*'
+    tags: ['v*']  # not the `artifacts` release tag
   pull_request:
 
 jobs:
@@ -20,5 +20,4 @@ jobs:
       - run: julia --project=docs/ -e 'using Pkg; Pkg.instantiate()'
       - run: julia --project=docs/ docs/make.jl
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # If authenticating with GitHub Actions token
-          DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }} # If authenticating with SSH deploy key
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

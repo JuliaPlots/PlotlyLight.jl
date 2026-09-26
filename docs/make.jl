@@ -19,6 +19,6 @@ makedocs(
 
 
 deploydocs(
-    repo = "https://github.com/JuliaComputing/PlotlyLight.jl",
+    repo = "github.com/JuliaPlots/PlotlyLight.jl.git",
     push_preview = true
 )
