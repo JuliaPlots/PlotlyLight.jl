@@ -1,7 +1,8 @@
-using PlotlyLight, Cobweb, Test, Aqua, Dates, JSON, Random
+using PlotlyLight, Cobweb, Test, Aqua, Dates, Random
 using PlotlyLight: settings, Plot, json
 
 html(x) = repr("text/html", x)
+
 
 #-----------------------------------------------------------------------------# json
 @testset "json" begin
@@ -20,17 +21,33 @@ html(x) = repr("text/html", x)
     @test json(NaN) == "null"
     @test json(Inf) == "null"
     @test json(-Inf) == "null"
-    @test json(DateTime(2021,1,1)) == "\"2021-01-01 00:00:00\""
+    @test json(DateTime(2021,1,1)) == "\"2021-01-01T00:00:00\""
     # Strings are JS-escaped, and can't close the surrounding <script>
     @test json("say \"hi\"") == "\"say \\\"hi\\\"\""
     @test json("a\nb") == "\"a\\nb\""
-    @test json("</script><br>") == "\"\\u003c/script>\\u003cbr>\""
+    @test json("</script><br>") == "\"\\u003c/script\\u003e\\u003cbr\\u003e\""
+    @test json("a & b") == "\"a \\u0026 b\""
+    @test json(Dict("</script>" => 1)) == "{\"\\u003c/script\\u003e\":1}"
     @test json(:x) == "\"x\""
+    # Nested values get the same treatment
+    @test json([1.0, NaN, Inf]) == "[1.0,null,null]"
+    @test json(Config(z = [1 2; 3 4], r = 1//2, s = "</script>")) == "{\"z\":[[1,2],[3,4]],\"r\":0.5,\"s\":\"\\u003c/script\\u003e\"}"
+    @test json(reshape(1:8, 2, 2, 2)) == "[[[1,5],[3,7]],[[2,6],[4,8]]]"  # x[i][j][k] == x[i,j,k]
+    @test json(π) == "3.141592653589793"
+    @test json(DateTime(2021,1,1,0,0,0,5)) == "\"2021-01-01T00:00:00.005\""
+    @test json(Date(2021,1,1)) == "\"2021-01-01\""
+    @test json(skipmissing([1, missing])) == "[1]"
+    @test json((1, 2)) == "[1,2]"
+    @test json(Config(p = :a => 1)) == "{\"p\":{\"a\":1}}"
+    @test json(Dict(1 => 2)) == "{\"1\":2}"
+    # Unsupported types are an error, not a field-by-field object
+    @test_throws ArgumentError json(1 + 2im)
+    @test_throws ArgumentError json(Config(x = Some(1)))
 end
 
 @testset "compression" begin
     c = PlotlyLight.Compression(on=true, min_length=0)
-    cjson(x, c=c) = sprint(json, x; context = :plotlylight_compression => c)
+    cjson(x, c=c) = json(PlotlyLight.compress(c, x))
     @test cjson(Int[1, 2]) == "await numArrFromBase64(Uint8Array,'eJxjZAIAAAYABA==',2)"
     @test cjson(Int[1 2; 3 4]) == "await numArrFromBase64(Uint8Array,'eJxjZGJmAQAAGAAL',2,2)"
     @test cjson(Float64[1, 2]) == "await numArrFromBase64(Float16Array,'eJxjsGFwAAAA+AB9',2)"
@@ -43,7 +60,7 @@ end
     @test cjson(Any["a", 1]) == "[\"a\",1]"
     @test cjson(Config(x = [1, 2], name = "a")) == "{\"x\":$(cjson([1, 2])),\"name\":\"a\"}"
     @test cjson(([1, 2],)) == "[$(cjson([1, 2]))]"
-    @test json([1, 2]) == "[1,2]"  # no compression without the IOContext setting
+    @test json([1, 2]) == "[1,2]"  # no compression by default
 
     # Smallest JS type whose error is ≤ rtol of the data's range.  JS has no Int64 typed array.
     type(x, c=c) = PlotlyLight._compressed_json_type(x, c)
@@ -104,7 +121,7 @@ end
 @testset "plot" begin
     @test_warn "`scatter` does not have attribute `X`" plot.scatter(X=1:10);
     @test_nowarn plot.scatter(x=1:10);
-    @test contains(JSON.json(plot(y=1:10)), "scatter")
+    @test contains(json(plot(y=1:10).data), "scatter")
 end
 
 @testset "settings" begin
@@ -126,7 +143,6 @@ end
 @testset "other" begin
     @test propertynames(Plot()) isa Vector{Symbol}
     @test all(x in propertynames(Plot()) for x in propertynames(plot))
-    @test collect(propertynames(JSON.parse(JSON.json(Plot())))) == [:data, :layout, :config]
 end
 
 @testset "show/display" begin
@@ -136,6 +152,7 @@ end
     @test repr("text/plain", p) == "PlotlyLight.Plot with 2 traces\n  1. scatter: x, y\n  2. bar: y"
     Random.seed!(1); a = rand(); Random.seed!(1); html(p); b = rand()
     @test a == b  # displaying a plot doesn't consume the global RNG
+    @test allunique([PlotlyLight.plot_id() for _ in 1:10_000])
     @test repr("text/plain", Plot()) == "PlotlyLight.Plot with 0 traces"
 
     # External scripts are loaded once per page by the plot's script, not a `<script src>` per plot
@@ -145,8 +162,9 @@ end
     @test occursin("class=\"plotlylight-fallback\"", s)
     @test occursin("PlotlyLight couldn't draw this plot: ", s)
     @test occursin("\"$(PlotlyLight.plotly.url)\"", s)
-    # ...but full pages (save, REPL, Jupyter iframe) load them in <head>
-    @test occursin("<script src=\"$(PlotlyLight.plotly.url)\"", html(PlotlyLight.html_page(p)))
+    # Full pages (save, REPL, Jupyter iframe) work the same way
+    @test !occursin("<script src", html(PlotlyLight.html_page(p)))
+    @test occursin("[\"$(PlotlyLight.plotly.url)\"]", html(PlotlyLight.html_page(p)))
     @test occursin("<iframe", sprint((io, x) -> show(IOContext(io, :jupyter => true), MIME("text/html"), x), p))
     # Inline sources (e.g. `standalone!`) are included as-is and plot immediately
     PlotlyLight.with_settings(src = h.script("/* plotly.js */")) do _
@@ -166,6 +184,9 @@ end
         f()
     end
 end
+
+#-----------------------------------------------------------------------------# browser
+include("browser.jl")
 
 #-----------------------------------------------------------------------------# Aqua
 Aqua.test_all(PlotlyLight,

@@ -1,58 +1,105 @@
-#-----------------------------------------------------------------------------# json
-function json_join(io::IO, itr, sep, left, right)
+#------------------------------------------------------------------------------# json
+# All serialization to JSON goes through `json(io, x)`
+
+function json_join(io::IO, itr, left, right, f=json)
     print(io, left)
     for (i, item) in enumerate(itr)
-        i == 1 || print(io, sep)
-        json(io, item)
+        i == 1 || print(io, ',')
+        f(io, item)
     end
     print(io, right)
 end
 
-json(io::IO, x) = json_join(io, x, ',', '[', ']')  # ***FALLBACK METHOD***
-
 json(x) = sprint(json, x)
 
-# Strings
-# JSON-escaped, and `<` as `\u003c` so data can't end the surrounding `<script>` (e.g. "</script>").
-# (HTML escaping like `Cobweb.escape` is wrong here: entities aren't decoded inside `<script>`.)
-json(io::IO, x::Union{AbstractChar, AbstractString, Symbol}) = print(io, replace(JSON.json(string(x)), '<' => "\\u003c"))
-json(io::IO, x::DateTime) = json(io, Dates.format(x, "YYYY-mm-dd HH:MM:SS"))
-json(io::IO, x::Date) = json(io, Dates.format(x, "YYYY-mm-dd"))
+# Iterables --> array.  Anything else without a method is an error.
+function json(io::IO, x)
+    applicable(iterate, x) || throw(unsupported(x))
+    json_join(io, x, '[', ']')
+end
 
-# Numbers
-json(io::IO, x::Real) = isfinite(x) ? print(io, x) : print(io, "null")
-json(io::IO, x::Rational) = json(io, float(x))
+unsupported(x) = ArgumentError("""
+    PlotlyLight doesn't know how to write a `$(typeof(x))` as JSON.  Convert it to a supported type, or add a method:
+        PlotlyLight.json(io::IO, x::$(typeof(x))) = <write x's JSON to io>
+    """)
 
-# Nulls
+
+struct RawJS
+    code::String
+end
+json(io::IO, x::RawJS) = print(io, x.code)
+
+# Strings: JSON escapes, plus `<`, `>`, and `&`
+function json(io::IO, x::AbstractString)
+    s = x isa Union{String, SubString{String}} ? x : String(x)
+    print(io, '"')
+    start = 1  # first byte not yet written
+    GC.@preserve s begin
+        for i in 1:ncodeunits(s)
+            b = codeunit(s, i)
+            e = b < 0x80 ? JSON_ESCAPES[b + 1] : nothing
+            isnothing(e) && continue
+            unsafe_write(io, pointer(s, start), i - start)  # the unescaped run before byte `i`
+            print(io, e)
+            start = i + 1
+        end
+        unsafe_write(io, pointer(s, start), ncodeunits(s) - start + 1)
+    end
+    print(io, '"')
+end
+
+# Escapes by byte.  Only ASCII bytes are escaped, and those never occur inside a multi-byte UTF-8 character, so the
+# string can be scanned (and written) byte-wise.
+const JSON_ESCAPES = let t = Vector{Union{Nothing, String}}(nothing, 128)
+    for b in 0x00:0x1f  # control characters
+        t[b + 1] = "\\u" * string(b; base=16, pad=4)
+    end
+    for (c, e) in ('"' => "\\\"", '\\' => "\\\\", '\n' => "\\n", '\r' => "\\r", '\t' => "\\t",
+                   '<' => "\\u003c", '>' => "\\u003e", '&' => "\\u0026")
+        t[UInt8(c) + 1] = e
+    end
+    t
+end
+json(io::IO, x::Union{AbstractChar, Symbol, Dates.TimeType}) = json(io, string(x))
+
+# Numbers: Integers (and Bools) as-is, other Reals (Rational, Irrational, …) as floats, and NaN/±Inf as null (a gap
+# in the plot)
+json(io::IO, x::Number) = throw(unsupported(x))
+json(io::IO, x::Real) = (y = float(x); isfinite(y) ? print(io, y) : print(io, "null"))
+json(io::IO, x::Integer) = print(io, x)
 json(io::IO, ::Union{Missing, Nothing}) = print(io, "null")
 
-# Bools
-json(io::IO, x::Bool) = print(io, x ? "true" : "false")
+# Arrays: a matrix is an array of rows
+json(io::IO, x::AbstractVector) = json_join(io, x, '[', ']')
+json(io::IO, x::AbstractArray) = json_join(io, eachslice(x; dims=1), '[', ']')
+json(io::IO, x::AbstractArray{<:Any, 0}) = json(io, x[])
 
-# Objects
-json(io::IO, x::Pair) = (json(io, x.first); print(io, ':'); json(io, x.second))
-json(io::IO, x::Union{NamedTuple, AbstractDict}) = json_join(io, pairs(x), ',', '{', '}')
-
-# Arrays (a matrix is an array of rows)
-json_array(io::IO, x::AbstractArray) = json_join(io, ndims(x) == 1 ? x : eachslice(x; dims=1), ',', '[', ']')
-json(io::IO, x::AbstractArray) = json_array(io, x)
+# Objects: keys are written as strings, and a Pair is an object with one key
+json(io::IO, x::Union{AbstractDict, NamedTuple}) = json_join(io, pairs(x), '{', '}', json_member)
+json(io::IO, x::Pair) = json_join(io, (x,), '{', '}', json_member)
+json_member(io::IO, (k, v)) = (json(io, string(k)); print(io, ':'); json(io, v))
 
 #------------------------------------------------------------------------------# compression
-function json(io::IO, x::AbstractVecOrMat{<:Real})
-    c = get(io, :plotlylight_compression, nothing)
-    (isnothing(c) || length(x) < c.min_length || eltype(x) <: Bool) && return json_array(io, x)
+# `x` with arrays of numbers/strings (at least `c.min_length` long) replaced by `RawJS` that decodes them in the
+# browser.  The calls are `await`ed inside NewPlotScript's async function, and defined by COMPRESSION_SRC.
+compress(c::Compression, x) = x
+compress(c::Compression, x::Union{Tuple, NamedTuple, AbstractArray}) = map(v -> compress(c, v), x)
+compress(c::Compression, x::AbstractDict) = Config(map(((k, v),) -> k => compress(c, v), collect(x))...)
+compress(c::Compression, x::Pair) = x.first => compress(c, x.second)
+
+function compress(c::Compression, x::AbstractVecOrMat{<:Real})
+    (length(x) < c.min_length || eltype(x) <: Bool) && return x
     T = _compressed_json_type(x, c)
     data = vec(T.(transpose(x)))  # JS matrices are row-major
-    print(io, "await numArrFromBase64(", JS_TYPED_ARRAYS[T], ",'", base64encode(zlib_compress(data)), "',", join(size(x), ','), ")")
+    RawJS("await numArrFromBase64($(JS_TYPED_ARRAYS[T]),'$(base64encode(zlib_compress(data)))',$(join(size(x), ',')))")
 end
 
-function json(io::IO, x::AbstractVector{<:AbstractString})
-    c = get(io, :plotlylight_compression, nothing)
-    (isnothing(c) || length(x) < c.min_length) && return json_array(io, x)
-    print(io, "await strVecFromBase64('", base64encode(zlib_compress(Vector{UInt8}(JSON.json(x)))), "')")
+function compress(c::Compression, x::AbstractVector{<:AbstractString})
+    length(x) < c.min_length && return x
+    RawJS("await strVecFromBase64('$(base64encode(zlib_compress(Vector{UInt8}(json(x)))))')")
 end
 
-# zlib-format deflate (what the browser's `DecompressionStream("deflate")` reads) via zlib's `compress2`
+# compress data into something `DecompressionStream("deflate")` can read.
 function zlib_compress(data::DenseArray)
     n = Ref(ccall((:compressBound, libz), Culong, (Culong,), sizeof(data)))
     out = Vector{UInt8}(undef, n[])
@@ -81,10 +128,7 @@ function _compressed_json_type(x::AbstractArray{<:Integer}, c::Compression)
 end
 _compressed_json_type(x::AbstractArray{<:Real}, c::Compression) = _compressed_float_type(x, c)
 
-# Smallest of `c.float_types` whose rounding error is at most `c.rtol` of the data's range, i.e. under a pixel
-# even when zoomed in 100x.  Error relative to the range (not the values) is what's visible: GPS coordinates
-# (≈45.123456) need Float64, while integer-valued data is exact in Float16.  Falls back to the largest type.
-# Float16Array needs Chrome/Edge 135 (April 2025), Firefox 129 (August 2024) or Safari 18.2 (December 2024).
+# Smallest of `c.float_types` whose rounding error is at most `c.rtol` of the data's range
 function _compressed_float_type(x::AbstractArray{<:Real}, c::Compression)
     types = sort!(collect(c.float_types); by = sizeof)
     isempty(x) && return first(types)
@@ -104,11 +148,8 @@ end
 _fits(::Type{T}, x, tol) where {T} = all(v -> !isfinite(v) || abs(Float64(T(v)) - Float64(v)) <= tol, x)
 
 #------------------------------------------------------------------------------# JS decoders
-# Injected into the page when compression is on.  DecompressionStream is asynchronous, so the calls written by
-# `json` are `await`ed inside NewPlotScript's async draw function.  Attached to `window` because some hosts
-# (e.g. Pluto) run each <script> inside its own function, where plain `function` declarations wouldn't be
-# visible to the plot's script.
-COMPRESSION_SRC = h.script(raw"""
+# Attach JS functions to `window`.  Pluto runs any <script> in its own function and we need to find them
+const COMPRESSION_SRC = h.script(raw"""
     window.base64ToBytes = function(s) {
         if (Uint8Array.fromBase64) return Uint8Array.fromBase64(s);
         const bin = atob(s), bytes = new Uint8Array(bin.length);

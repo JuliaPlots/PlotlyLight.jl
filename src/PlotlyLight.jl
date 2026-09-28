@@ -1,15 +1,13 @@
 module PlotlyLight
 
 using Artifacts: @artifact_str
-using Base64
-using Downloads: download
 using Dates
 using REPL
 using Random: RandomDevice
 
-using JSON: JSON
 using EasyConfig: Config
 using Cobweb: Cobweb, h, IFrame, Node
+using Base64: base64encode
 using Zlib_jll: libz
 
 #-----------------------------------------------------------------------------# exports
@@ -19,11 +17,10 @@ artifact(x...) = joinpath(artifact"plotly_artifacts", x...)
 
 #-----------------------------------------------------------------------------# plotly::PlotlyArtifacts
 Base.@kwdef struct PlotlyArtifacts
-    version::VersionNumber  = VersionNumber(read(artifact("version.txt"), String))
-    url::String             = "https://cdn.plot.ly/plotly-$version.min.js"
-    path::String            = artifact("plotly.min.js")
-    schema::JSON.Object{String, Any} = JSON.parsefile(artifact("plot-schema.json"))
-    templates::Dict{String,String} = Dict(t => artifact("templates", t) for t in readdir(artifact("templates")))
+    version::VersionNumber          = VersionNumber(read(artifact("version.txt"), String))
+    url::String                     = "https://cdn.plot.ly/plotly-$version.min.js"
+    path::String                    = artifact("plotly.min.js")
+    templates::Dict{String,String}  = Dict(t => artifact("templates", t) for t in readdir(artifact("templates")))
 end
 Base.show(io::IO, p::PlotlyArtifacts) = print(io, "PlotlyArtifacts: v$(p.version)")
 plotly::PlotlyArtifacts = PlotlyArtifacts()
@@ -68,12 +65,12 @@ function with_settings(f; kw...)
     end
 end
 
-#------------------------------------------------------------------------------# json.jl
+#------------------------------------------------------------------------------# includes
 include("json.jl")
+include("generated.jl")  # `schema`: written by deps/generate.jl
 
 #-----------------------------------------------------------------------------# utils/other
-attributes(t::Symbol) = plotly.schema.traces[t].attributes
-check_attribute(trace, attr::Symbol) = haskey(attributes(Symbol(trace)), attr) || @warn("`$trace` does not have attribute `$attr`.")
+check_attribute(trace, attr::Symbol) = attr ∈ schema[Symbol(trace)] || @warn("`$trace` does not have attribute `$attr`.")
 check_attributes(trace; kw...) = foreach(k -> check_attribute(Symbol(trace), k), keys(kw))
 
 #-----------------------------------------------------------------------------# Plot
@@ -95,7 +92,7 @@ save(file::AbstractString, p::Plot) = save(p, file)
 (p::Plot)(p2::Plot) = merge!(p, p2)
 
 Base.getproperty(p::Plot, x::Symbol) = x in fieldnames(Plot) ? getfield(p, x) : (; kw...) -> p(plot(; type=x, kw...))
-Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., Symbol.(keys(plotly.schema.traces))...)
+Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., keys(schema)...)
 
 Base.merge!(a::Plot, b::Plot) = (append!(a.data, b.data); merge!(a.layout, b.layout); merge!(a.config, b.config); a)
 
@@ -105,23 +102,11 @@ function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
     data = isempty(kw) ? Config[] : [Config(; type, kw...)]
     Plot(data, layout, config)
 end
-Base.propertynames(::typeof(plot)) = Symbol.(keys(plotly.schema.traces))
+Base.propertynames(::typeof(plot)) = collect(keys(schema))
 Base.getproperty(::typeof(plot), type::Symbol) = (; kw...) -> plot(; type=type, kw...)
 
 
 #-----------------------------------------------------------------------------# NewPlotScript
-# <script> that starts loading `srcs` (once per page, in order), records promises in `window.__plotlylight_scripts`.
-load_scripts(srcs) = h.script("""(srcs => {
-    const loaded = window.__plotlylight_scripts || (window.__plotlylight_scripts = {});
-    const failed = window.__plotlylight_failed || (window.__plotlylight_failed = []);
-    for (const src of srcs) loaded[src] = loaded[src] || new Promise(resolve => {
-        const s = document.createElement("script");
-        s.src = src; s.async = false; s.onload = resolve;
-        s.onerror = () => { failed.push(src); resolve(); };
-        document.head.appendChild(s);
-    });
-})($(JSON.json(srcs)))""")
-
 # Static content of the plot's div, replaced once the plot draws
 plot_fallback() = h.p("Loading plot…  If this message stays, JavaScript didn't run here (e.g. an untrusted notebook).";
     class="plotlylight-fallback", style="font-family:sans-serif; color:#888;")
@@ -132,36 +117,42 @@ struct NewPlotScript
     settings::Settings
     id::String
 end
+
 function Base.show(io::IO, ::MIME"text/html", o::NewPlotScript)
-    layout = merge(o.settings.layout, o.plot.layout)
-    config = merge(o.settings.config, o.plot.config)
-    c = o.settings.compression
-    jsonio = c.on ? IOContext(io, :plotlylight_compression => c) : io
+    s = o.settings
+    # Arguments to `Plotly.newPlot`: settings' defaults merged in, and large arrays compressed if it's on
+    args = (o.plot.data, merge(s.layout, o.plot.layout), merge(s.config, o.plot.config))
+    s.compression.on && (args = map(x -> compress(s.compression, x), args))
+    # External scripts are loaded by the plot's script, each once per page (see the JS below)
+    srcs = filter(!isnothing, map(script_src, page_scripts(s)))
+    plotly_src = script_src(s.src)
+    msg = "plotly.js didn't load from $plotly_src.  If you're offline, try `PlotlyLight.preset.source.standalone!()`."
     print(io, """<script>(async () => {
-    const div = document.getElementById("$(o.id)");
-    try {
-        await Promise.all(Object.values(window.__plotlylight_scripts || {}));
-        if (typeof Plotly === "undefined") {
-            const failed = window.__plotlylight_failed || [];
-            throw new Error("plotly.js didn't load" + (failed.length ? " (failed: " + failed.join(", ") + ")" : "") +
-                ".  If you're offline, try `PlotlyLight.preset.source.standalone!()`.");
-        }
-        div.replaceChildren();
-        await Plotly.newPlot(div, """)
-    json(jsonio, o.plot.data); print(io, ',')
-    json(jsonio, layout); print(io, ',')
-    json(jsonio, config)
+        const div = document.getElementById("$(o.id)");
+        try {
+            const loaded = window.__plotlylight_scripts ??= {};
+            await Promise.all($(json(srcs)).map(src => loaded[src] ??= new Promise(resolve => {
+                const s = document.createElement("script");
+                s.src = src; s.async = false; s.onload = s.onerror = resolve;
+                document.head.appendChild(s);
+            })));
+            if (!window.Plotly) throw new Error($(json(msg)));
+            div.replaceChildren();
+            await Plotly.newPlot(div,
+        """)
+    json_join(io, args, "", "")
     print(io, """);
-    } catch (e) {
-        div.replaceChildren(Object.assign(document.createElement("pre"),
-            {textContent: "PlotlyLight couldn't draw this plot: " + e.message, style: "color:#c00; white-space:pre-wrap;"}));
-    }
-})()</script>""")
+        } catch (e) {
+            div.replaceChildren(Object.assign(document.createElement("pre"),
+                {textContent: "PlotlyLight couldn't draw this plot: " + e.message, style: "color:#c00; white-space:pre-wrap;"}));
+        }
+    })()</script>
+    """)
 end
 
 #-----------------------------------------------------------------------------# display
-# From the OS's entropy, not the global RNG: displaying a plot shouldn't change the user's random numbers
-rand_id() = "plotlylight-" * join(rand(RandomDevice(), 'a':'z', 10))
+# Random, from the OS's entropy rather than the global RNG: displaying a plot shouldn't change the user's random numbers
+plot_id() = "plotlylight-" * join(rand(RandomDevice(), 'a':'z', 10))
 
 # `src` of a `<script src=...>` Node, otherwise `nothing`
 script_src(x) = x isa Node && Cobweb.tag(x) == :script ? get(Cobweb.attrs(x), :src, nothing) : nothing
@@ -169,30 +160,26 @@ script_src(x) = x isa Node && Cobweb.tag(x) == :script ? get(Cobweb.attrs(x), :s
 # Scripts every plot needs: `settings.src_inject`, compression decoders (if on), and plotly.js
 page_scripts(s::Settings) = [s.src_inject..., (s.compression.on ? (COMPRESSION_SRC,) : ())..., s.src]
 
-# External scripts are loaded once per page by `load_scripts`; everything else is included as-is.
-function html_div(o::Plot, id=rand_id())
-    scripts = page_scripts(settings)
-    srcs = filter(!isnothing, script_src.(scripts))
-    inline = filter(x -> isnothing(script_src(x)), scripts)
-    loader = isempty(srcs) ? () : (load_scripts(srcs),)
-    h.div(class="plotlylight-parent", inline..., loader..., settings.div(plot_fallback(); id), NewPlotScript(o, settings, id))
+# The plot's inline scripts, div, and NewPlotScript (which handles the external scripts)
+function html_div(o::Plot, id=plot_id())
+    inline = filter(x -> isnothing(script_src(x)), page_scripts(settings))
+    h.div(class="plotlylight-parent", inline..., settings.div(plot_fallback(); id), NewPlotScript(o, settings, id))
 end
 
-function html_page(o::Plot, id=rand_id())
+function html_page(o::Plot, id=plot_id())
     h.html(
         h.head(
             h.meta(charset="utf-8"),
             h.meta(name="viewport", content="width=device-width, initial-scale=1"),
             h.meta(name="description", content="PlotlyLight.jl Plot"),
             h.title("PlotlyLight.jl"),
-            settings.page_css,
-            page_scripts(settings)...
+            settings.page_css
         ),
-        h.body(h.div(class="plotlylight-parent", settings.div(plot_fallback(); id), NewPlotScript(o, settings, id)))
+        h.body(html_div(o, id))
     )
 end
 
-function html_iframe(o::Plot, id=rand_id(), kw...)
+function html_iframe(o::Plot, id=plot_id(), kw...)
     with_settings() do s
         s.div.style = "height:100vh; width:100vw"
         Cobweb.IFrame(html_page(o, id); style=s.iframe_style, kw...)
@@ -226,7 +213,8 @@ Base.display(::REPL.REPLDisplay, o::Plot) = Cobweb.preview(html_page(o); reuse=s
 # `preset_src_<X>` overwrites `settings.src`
 # `preset_display_<X>` overwrites `settings.config.responsive`, `settings.div`, `settings.layout.[width, height]`
 
-template!(t) = (settings.layout.template = JSON.parsefile(plotly.templates["$t.json"]); nothing)
+# Templates are inserted verbatim (they're JSON already)
+template!(t) = (settings.layout.template = RawJS(read(plotly.templates["$t.json"], String)); nothing)
 
 preset = (
     template = (

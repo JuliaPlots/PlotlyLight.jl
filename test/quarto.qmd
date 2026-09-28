@@ -1,9 +1,0 @@
----
-engine: julia
----
-
-```{julia}
-using PlotlyLight
-
-plot()
-```
