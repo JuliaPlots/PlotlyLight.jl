@@ -68,7 +68,7 @@ jobs:
 
       - name: Build artifact, upload to the `artifacts` release, and update Artifacts.toml
         run: julia --color=yes deps/artifacts.jl
-      - name: Regenerate src/generated.jl from the new artifact's plot-schema.json
+      - name: Regenerate src/Schema.jl from the new artifact's plot-schema.json
         run: julia --color=yes deps/generate.jl
 
       - uses: julia-actions/julia-buildpkg@v1
@@ -84,7 +84,7 @@ jobs:
           sed -i -E "s/^version = \".*\"/version = \"$new\"/" Project.toml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Project.toml Artifacts.toml src/generated.jl
+          git add Project.toml Artifacts.toml src/Schema.jl
           git commit -m "Update plotly.js to $PLOTLY_VERSION (v$new)"
           git push origin "HEAD:${{ github.event.repository.default_branch }}"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

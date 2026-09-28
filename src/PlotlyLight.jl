@@ -5,73 +5,65 @@ using Dates
 using REPL
 using Random: RandomDevice
 
+using OrderedCollections: OrderedDict
 using EasyConfig: Config
-using Cobweb: Cobweb, h, IFrame, Node
+using Cobweb: Cobweb, h, Node
 using Base64: base64encode
-using Zlib_jll: libz
 
 #-----------------------------------------------------------------------------# exports
 export Config, preset, Plot, plot
 
+#-----------------------------------------------------------------------------# plotly.js artifact
+# Paths are looked up when used rather than stored at precompile time, so they stay right if the depot moves
 artifact(x...) = joinpath(artifact"plotly_artifacts", x...)
 
-#-----------------------------------------------------------------------------# plotly::PlotlyArtifacts
-Base.@kwdef struct PlotlyArtifacts
-    version::VersionNumber          = VersionNumber(read(artifact("version.txt"), String))
-    url::String                     = "https://cdn.plot.ly/plotly-$version.min.js"
-    path::String                    = artifact("plotly.min.js")
-    templates::Dict{String,String}  = Dict(t => artifact("templates", t) for t in readdir(artifact("templates")))
-end
-Base.show(io::IO, p::PlotlyArtifacts) = print(io, "PlotlyArtifacts: v$(p.version)")
-plotly::PlotlyArtifacts = PlotlyArtifacts()
+const PLOTLY_VERSION = VersionNumber(readchomp(artifact("version.txt")))
+const PLOTLY_URL = "https://cdn.plot.ly/plotly-$PLOTLY_VERSION.min.js"
+const SCHEMA_FILE = artifact("plot-schema.json")
+
+const PLACEHOLDER = h.div(
+    h.p("Loading PlotlyLight.jl plot..."),
+    h.p("If this remains, PlotlyJS failed to load.", style="color:red")
+)
+
+const MATHJAX_URL = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"
 
 #-----------------------------------------------------------------------------# Settings
-Base.@kwdef mutable struct Compression
-    on::Bool = false
-    min_length::Int = 100
-    float_types::Tuple = (Float64, Float32, Float16)  # candidates for float compression
-    rtol::Float64 = 1e-5  # criteria for dropping to smaller float
-end
-
 Base.@kwdef mutable struct Settings
-    src::Node               = h.script(src=plotly.url, charset="utf-8")
-    div::Node               = h.div(; class="plotlylight-plot-div")
-    layout::Config          = Config()
-    config::Config          = Config(responsive=true, displaylogo=false)
-    reuse_preview::Bool     = true
-    page_css::Cobweb.Node   = h.style("html, body { padding: 0px; margin: 0px; }")
-    use_iframe::Bool        = false
-    iframe_style            = "display:block; border:none; min-height:350px; min-width:350px; width:100%; height:100%"
-    src_inject::Vector      = []
-    compression::Compression = Compression()
+    div::Node           = h.div(; class="plotlylight-plot-div")
+    layout::Config      = Config()
+    config::Config      = Config(responsive=true, displaylogo=false)
+    js_deps::OrderedDict{Symbol, String} = OrderedDict(:plotly => PLOTLY_URL)
+    compress::Bool      = false
 end
 settings::Settings = Settings()
 
-function Settings(s::Settings; kw...)
-    s2 = deepcopy(s)
-    for (k, v) in kw
-        setfield!(s2, k, v)
-    end
-    return s2
-end
-
-function with_settings(f; kw...)
-    old = settings
-    try
-        global settings = Settings(settings; kw...)
-        f(settings)
-    finally
-        global settings = old
-    end
-end
-
-#------------------------------------------------------------------------------# includes
-include("json.jl")
-include("generated.jl")  # `schema`: written by deps/generate.jl
-
 #-----------------------------------------------------------------------------# utils/other
-check_attribute(trace, attr::Symbol) = attr ∈ schema[Symbol(trace)] || @warn("`$trace` does not have attribute `$attr`.")
-check_attributes(trace; kw...) = foreach(k -> check_attribute(Symbol(trace), k), keys(kw))
+function unknown_trace_msg(t)
+    lc = Symbol(lowercase(string(t)))
+    hint = haskey(Schema.traces, lc) ? "  Did you mean `$lc`?" : ""
+    "`$t` is not a plotly.js trace type.$hint  See `keys(PlotlyLight.Schema.traces)`."
+end
+
+function check_attributes(type; kw...)
+    t = Symbol(type)
+    haskey(Schema.traces, t) || return @warn(unknown_trace_msg(t))
+    attrs = Schema.traces[t][:attributes]
+    foreach(k -> haskey(attrs, k) || @warn("`$t` does not have attribute `$k`."), keys(kw))
+end
+
+# `b` merged into `a`, recursing into nested dicts rather than replacing them.  `b`'s dicts are copied into `a`, so
+# `a` never shares them with `b`.  (Other values, e.g. data arrays, are shared as usual.)
+function deepmerge!(a::Config, b::AbstractDict)
+    foreach(pairs(b)) do (k, v)
+        old = get(a, k, nothing)
+        a[k] = v isa AbstractDict ? deepmerge!(old isa Config ? old : Config(), v) : v
+    end
+    return a
+end
+deepmerge(a, b) = deepmerge!(deepmerge!(Config(), a), b)
+
+trace_type(trace) = get(trace, :type, :scatter)
 
 #-----------------------------------------------------------------------------# Plot
 mutable struct Plot
@@ -84,17 +76,38 @@ end
 
 Base.:(==)(a::Plot, b::Plot) = all(getfield(a,f) == getfield(b,f) for f in fieldnames(Plot))
 
-save(p::Plot, file::AbstractString) = open(io -> print(io, html_page(p)), file, "w")
+save(p::Plot, file::AbstractString) = open(io -> show(io, MIME("text/html"), html_page(p)), file, "w")
 save(file::AbstractString, p::Plot) = save(p, file)
 
 (p::Plot)(; kw...) = p(Config(kw))
 (p::Plot)(data::Config) = (push!(p.data, data); return p)
 (p::Plot)(p2::Plot) = merge!(p, p2)
 
-Base.getproperty(p::Plot, x::Symbol) = x in fieldnames(Plot) ? getfield(p, x) : (; kw...) -> p(plot(; type=x, kw...))
-Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., keys(schema)...)
+function Base.getproperty(p::Plot, x::Symbol)
+    x in fieldnames(Plot) && return getfield(p, x)
+    haskey(Schema.traces, x) && return (; kw...) -> p(plot(; type=x, kw...))
+    throw(ArgumentError("`Plot` has no property `$x`.  Can be `data`, `layout`, `config`, or a trace name."))
+end
+Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., keys(Schema.traces)...)
 
-Base.merge!(a::Plot, b::Plot) = (append!(a.data, b.data); merge!(a.layout, b.layout); merge!(a.config, b.config); a)
+# `b`'s traces and nested layout/config are copied, so later changes to `b` don't show up in `a`
+function Base.merge!(a::Plot, b::Plot)
+    append!(a.data, map(t -> deepmerge!(Config(), t), b.data))
+    deepmerge!(a.layout, b.layout)
+    deepmerge!(a.config, b.config)
+    return a
+end
+
+function apply!(p::Plot, s::Settings)
+    p.layout = deepmerge(s.layout, p.layout)
+    p.config = deepmerge(s.config, p.config)
+    return p
+end
+apply(p::Plot, s::Settings) = apply!(merge!(Plot(), p), s)
+
+#------------------------------------------------------------------------------# includes
+include("json.jl")
+include("Schema.jl")
 
 #-----------------------------------------------------------------------------# plot
 function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
@@ -102,45 +115,39 @@ function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
     data = isempty(kw) ? Config[] : [Config(; type, kw...)]
     Plot(data, layout, config)
 end
-Base.propertynames(::typeof(plot)) = collect(keys(schema))
-Base.getproperty(::typeof(plot), type::Symbol) = (; kw...) -> plot(; type=type, kw...)
 
+Base.propertynames(::typeof(plot)) = collect(keys(Schema.traces))
 
-#-----------------------------------------------------------------------------# NewPlotScript
-# Static content of the plot's div, replaced once the plot draws
-plot_fallback() = h.p("Loading plot…  If this message stays, JavaScript didn't run here (e.g. an untrusted notebook).";
-    class="plotlylight-fallback", style="font-family:sans-serif; color:#888;")
-
-# PlotlyLight representation of: <script>Plotly.newPlot("$id", $data, $layout, $config)</script>
-struct NewPlotScript
-    plot::Plot
-    settings::Settings
-    id::String
+function Base.getproperty(::typeof(plot), type::Symbol)
+    haskey(Schema.traces, type) || throw(ArgumentError(unknown_trace_msg(type)))
+    return (; kw...) -> plot(; type, kw...)
 end
 
-function Base.show(io::IO, ::MIME"text/html", o::NewPlotScript)
-    s = o.settings
-    # Arguments to `Plotly.newPlot`: settings' defaults merged in, and large arrays compressed if it's on
-    args = (o.plot.data, merge(s.layout, o.plot.layout), merge(s.config, o.plot.config))
-    s.compression.on && (args = map(x -> compress(s.compression, x), args))
-    # External scripts are loaded by the plot's script, each once per page (see the JS below)
-    srcs = filter(!isnothing, map(script_src, page_scripts(s)))
-    plotly_src = script_src(s.src)
-    msg = "plotly.js didn't load from $plotly_src.  If you're offline, try `PlotlyLight.preset.source.standalone!()`."
+#-----------------------------------------------------------------------------# NewPlot
+# PlotlyLight representation of: <script>Plotly.newPlot("$id", $data, $layout, $config)</script>
+struct NewPlot
+    plot::Plot
+    id::String
+    sources::Vector{String}
+end
+
+function Base.show(io::IO, ::MIME"text/html", o::NewPlot)
+    (; data, layout, config) = o.plot
+    (; id, sources) = o
     print(io, """<script>(async () => {
-        const div = document.getElementById("$(o.id)");
+        const div = document.getElementById("$id");
         try {
             const loaded = window.__plotlylight_scripts ??= {};
-            await Promise.all($(json(srcs)).map(src => loaded[src] ??= new Promise(resolve => {
+            await Promise.all($sources.map(src => loaded[src] ??= new Promise(resolve => {
                 const s = document.createElement("script");
                 s.src = src; s.async = false; s.onload = s.onerror = resolve;
                 document.head.appendChild(s);
             })));
-            if (!window.Plotly) throw new Error($(json(msg)));
+            if (!window.Plotly) throw new Error("Plotly isn't loaded on the page.");
             div.replaceChildren();
             await Plotly.newPlot(div,
         """)
-    json_join(io, args, "", "")
+    json_join(io, (data, layout, config), "", "")
     print(io, """);
         } catch (e) {
             div.replaceChildren(Object.assign(document.createElement("pre"),
@@ -154,45 +161,31 @@ end
 # Random, from the OS's entropy rather than the global RNG: displaying a plot shouldn't change the user's random numbers
 plot_id() = "plotlylight-" * join(rand(RandomDevice(), 'a':'z', 10))
 
-# `src` of a `<script src=...>` Node, otherwise `nothing`
-script_src(x) = x isa Node && Cobweb.tag(x) == :script ? get(Cobweb.attrs(x), :src, nothing) : nothing
-
-# Scripts every plot needs: `settings.src_inject`, compression decoders (if on), and plotly.js
-page_scripts(s::Settings) = [s.src_inject..., (s.compression.on ? (COMPRESSION_SRC,) : ())..., s.src]
-
-# The plot's inline scripts, div, and NewPlotScript (which handles the external scripts)
+# The plot's div and NewPlot (which loads the scripts)
 function html_div(o::Plot, id=plot_id())
-    inline = filter(x -> isnothing(script_src(x)), page_scripts(settings))
-    h.div(class="plotlylight-parent", inline..., settings.div(plot_fallback(); id), NewPlotScript(o, settings, id))
+    h.div(class="plotlylight-parent",
+        settings.div(PLACEHOLDER; id),
+        NewPlot(apply(o, settings), id, collect(values(settings.js_deps)))
+    )
 end
 
+# A standalone page whose plot fills the window.
 function html_page(o::Plot, id=plot_id())
-    h.html(
+    page = h.html(
         h.head(
             h.meta(charset="utf-8"),
             h.meta(name="viewport", content="width=device-width, initial-scale=1"),
             h.meta(name="description", content="PlotlyLight.jl Plot"),
             h.title("PlotlyLight.jl"),
-            settings.page_css
+            h.style("html, body { padding: 0px; margin: 0px; } #$id { height: 100vh; }")
         ),
         h.body(html_div(o, id))
     )
+    return HTML(io -> (print(io, "<!DOCTYPE html>"); show(io, MIME("text/html"), page)))
 end
 
-function html_iframe(o::Plot, id=plot_id(), kw...)
-    with_settings() do s
-        s.div.style = "height:100vh; width:100vw"
-        Cobweb.IFrame(html_page(o, id); style=s.iframe_style, kw...)
-    end
-end
-
-function Base.show(io::IO, ::MIME"text/html", o::Plot)
-    (get(io, :jupyter, false) || settings.use_iframe) ?
-        show(io, MIME("text/html"), html_iframe(o)) :
-        show(io, MIME("text/html"), html_div(o))
-end
+Base.show(io::IO, ::MIME"text/html", o::Plot) = show(io, MIME("text/html"), html_div(o))
 Base.show(io::IO, ::MIME"juliavscode/html", o::Plot) = show(io, MIME("text/html"), o)
-trace_type(trace) = get(trace, :type, :scatter)  # plotly.js defaults to scatter
 
 Base.show(io::IO, o::Plot) = print(io, "Plot(", join(trace_type.(o.data), ", "), ")")
 
@@ -205,16 +198,15 @@ function Base.show(io::IO, ::MIME"text/plain", o::Plot)
     end
 end
 
-Base.display(::REPL.REPLDisplay, o::Plot) = Cobweb.preview(html_page(o); reuse=settings.reuse_preview)
-
+Base.display(::REPL.REPLDisplay, o::Plot) = Cobweb.preview(html_page(o))
 
 #-----------------------------------------------------------------------------# preset
 # `preset_template_<X>` overwrites `settings.layout.template`
-# `preset_src_<X>` overwrites `settings.src`
+# `preset_src_<X>` replaces `settings.js_deps[:plotly]`
 # `preset_display_<X>` overwrites `settings.config.responsive`, `settings.div`, `settings.layout.[width, height]`
 
 # Templates are inserted verbatim (they're JSON already)
-template!(t) = (settings.layout.template = RawJS(read(plotly.templates["$t.json"], String)); nothing)
+template!(t) = (settings.layout.template = RawJS(read(artifact("templates", "$t.json"), String)); nothing)
 
 preset = (
     template = (
@@ -231,15 +223,13 @@ preset = (
         ygridoff!       = () -> template!(:ygridoff)
     ),
     source = (
-        none!       = () -> (settings.src = h.div("No script due to `PlotlyLight.src_none!`", style="display:none;"); nothing),
-        cdn!        = () -> (settings.src = h.script(src=plotly.url, charset="utf-8"); nothing),
-        local!      = () -> (settings.src = h.script(src=plotly.path, charset="utf-8"); nothing),
-        standalone! = () -> (settings.src = h.script(read(plotly.path, String), charset="utf-8"); nothing)
+        none!       = () -> delete!(settings.js_deps, :plotly),
+        cdn!        = () -> (settings.js_deps[:plotly] = PLOTLY_URL),
+        local!      = () -> (settings.js_deps[:plotly] = artifact("plotly.min.js"))
     ),
     display = (
         fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),
-        mathjax!        = () -> (push!(settings.src_inject, h.script(src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js"))),
-        compress!       = (on=true) -> (settings.compression.on = on)
+        mathjax!        = () -> (settings.js_deps[:mathjax] = MATHJAX_URL; nothing),
     )
 )
 

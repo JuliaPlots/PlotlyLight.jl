@@ -8,8 +8,8 @@ p = plot(y=rand(10))
 PlotlyLight.save(p, "myplot.html")
 ```
 
-!!! note "Standalone Source"
-    Use `PlotlyLight.preset.source.standalone!()` before you save the plot if you want to be able view the plot without internet access.  This will copy-paste the plotly.js script into the html file.
+!!! note "Viewing Offline"
+    Saved plots load plotly.js from its CDN, so viewing them needs internet access.  Use `PlotlyLight.preset.source.local!()` before you save the plot to load it from the copy that comes with PlotlyLight instead, which works offline on this computer.
 
 
 

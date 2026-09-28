@@ -5,7 +5,7 @@ Templates are set by using the `preset.template.<template>!` family of functions
 ```@example templates
 using PlotlyLight
 
-keys(PlotlyLight.preset.template)
+PlotlyLight.preset.template
 ```
 
 We'll use the following plot to demonstrate each template:

@@ -21,17 +21,16 @@ end
 file_url(path) = "file://" * replace(Sys.iswindows() ? "/" * replace(abspath(path), '\\' => '/') : abspath(path), " " => "%20")
 
 #-----------------------------------------------------------------------------# rendering
-# Collects what happened on the page (and in its iframes) after the plots have had time to draw.  Base64 so the
-# JSON survives Chrome's `--dump-dom` HTML escaping.
+# Collects what happened on the page after the plots have had time to draw (`_fullData`: data after plotly.js decoded
+# any typed arrays).  Base64 so the JSON survives Chrome's `--dump-dom` HTML escaping.
 const REPORT_JS = """<script>setTimeout(() => {
-    const docs = [document, ...[...document.querySelectorAll("iframe")].map(f => f.contentDocument)];
-    const all = sel => docs.flatMap(d => [...d.querySelectorAll(sel)]);
+    const all = sel => [...document.querySelectorAll(sel)];
     const arr = a => a == null ? null : Array.from(a, v => ArrayBuffer.isView(v) || Array.isArray(v) ? Array.from(v) : v);
     const report = {
-        plots: all(".js-plotly-plot").map(p => p.data.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z)}))),
+        plots: all(".js-plotly-plot").map(p => p._fullData.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z)}))),
         fallbacks: all(".plotlylight-fallback").length,
         errors: all(".plotlylight-plot-div pre").map(e => e.textContent),
-        plotly_scripts: docs.map(d => d.querySelectorAll("script[src*='plotly']").length),
+        plotly_scripts: all("script[src*='plotly']").length,
     };
     const pre = document.createElement("pre");
     pre.id = "report";
@@ -114,16 +113,16 @@ if isnothing(chrome)
     @info "Skipping browser tests: no Chrome/Chromium found (set ENV[\"CHROME\"])"
 else
     @testset "browser: $chrome" begin
-        local_plotly = h.script(src=file_url(PlotlyLight.plotly.path), charset="utf-8")
+        local_plotly = file_url(PlotlyLight.artifact("plotly.min.js"))
         tricky = ["say \"hi\"", "back\\slash", "new\nline", "</script><b>x</b>", "</script x", "a<br>b", "😀", "tab\there"]
-        y = 45 .+ (1:200) ./ 1e5  # needs Float64 when compressed
+        y = 45 .+ (1:200) ./ 1e5  # stays Float64 even with `compress(p; float_rtol=1e-5)`
         text = [tricky; string.("p", 8:200)]
         z = reshape(1.0:300, 3, 100)
         p = plot.scatter(x = 1:200, y = y, text = text)(plot.heatmap(z = z))
 
         # `f()` with default settings, local plotly.js, and `kw` overrides
         function with_defaults(f; kw...)
-            defaults = PlotlyLight.Settings(; src=local_plotly)
+            defaults = PlotlyLight.Settings(; js_deps=PlotlyLight.OrderedDict(:plotly => local_plotly))
             fields = Dict(k => getfield(defaults, k) for k in fieldnames(PlotlyLight.Settings))
             PlotlyLight.with_settings(_ -> f(); merge(fields, Dict(kw))...)
         end
@@ -141,12 +140,11 @@ else
             @test heatmap["z"] == [z[i, :] for i in 1:3]  # rows
         end
 
-        compressed = PlotlyLight.Compression(on=true)
         for (name, host) in ["static page" => static, "AMD (require.js) page" => amd, "Pluto" => pluto,
                              "re-created scripts" => recreate]
             @testset "$name" begin
                 drew(render(chrome, host(html(p))))
-                drew(render(chrome, host(html(p; compression=compressed))))
+                drew(render(chrome, host(html(PlotlyLight.compress(p; float_rtol=1e-5)))))
             end
         end
 
@@ -155,16 +153,10 @@ else
             drew(render(chrome, static(vscode)))
         end
 
-        @testset "Jupyter (IJulia's :jupyter => an iframe)" begin
-            jupyter = with_defaults(() -> sprint(show, MIME("text/html"), p; context=:jupyter => true))
-            @test occursin("<iframe", jupyter)
-            drew(render(chrome, jupyter))
-        end
-
         @testset "several plots load plotly.js once" begin
             report = render(chrome, join(map(_ -> html(p), 1:3)))
             drew(report; n=3)
-            @test first(report["plotly_scripts"]) == 1
+            @test report["plotly_scripts"] == 1
         end
 
         @testset "saved file (html_page)" begin
@@ -181,15 +173,15 @@ else
 
             # plotly.js fails to load: the reason replaces the fallback
             missing_plotly = file_url(joinpath(mktempdir(), "no-plotly.js"))
-            report = render(chrome, html(p; src=h.script(src=missing_plotly)))
+            report = render(chrome, html(p; js_deps=PlotlyLight.OrderedDict(:plotly => missing_plotly)))
             @test isempty(report["plots"])
             @test report["fallbacks"] == 0
             @test only(report["errors"]) == "PlotlyLight couldn't draw this plot: plotly.js didn't load from " *
-                "$missing_plotly.  If you're offline, try `PlotlyLight.preset.source.standalone!()`."
+                "$missing_plotly.  If you're offline, try `PlotlyLight.preset.source.local!()`."
 
             # Another script (e.g. MathJax) fails to load: the plot still draws
             missing_extra = file_url(joinpath(mktempdir(), "no-mathjax.js"))
-            drew(render(chrome, html(p; src_inject=[h.script(src=missing_extra)])))
+            drew(render(chrome, html(p; js_deps=PlotlyLight.OrderedDict(:plotly => local_plotly, :mathjax => missing_extra))))
         end
     end
 end
