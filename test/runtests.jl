@@ -122,6 +122,12 @@ end
     js = json(Compressed(a))
     @test occursin("return rows(x, [2,2,2]);", js) && decompressed(js) == vec(permutedims(a, (3, 2, 1)))
     @test occursin(".arrayBuffer()", html(plot.scatter(y=Compressed(zeros(1000)))))
+    # Bools: one byte each, read back as JS `true`/`false`
+    js = json(Compressed([true, false, true]))
+    @test occursin("v => v === 1", js) && decompressed(js) == [1, 0, 1]
+    @test decompressed(json(Compressed(trues(3)))) == [1, 1, 1]  # BitArray
+    js = json(Compressed([true false false; false true true]))
+    @test occursin("x.slice(", js) && occursin("return rows(x, [2,3]);", js) && decompressed(js) == [1, 0, 0, 0, 1, 1]
 
     # Everything else: JSON
     x = Config(y = repeat([1.5, 2.5], 1000), text = fill("</script>", 1000))
@@ -130,11 +136,33 @@ end
     @test sizeof(js) < sizeof(json(x)) / 10
     @test String(decompressed(js)) == json(x)
     @test String(decompressed(json(Compressed(["a", "b"])))) == "[\"a\",\"b\"]"
-    @test String(decompressed(json(Compressed([true, false])))) == "[true,false]"  # no JS array of Bools
     @test String(decompressed(json(Compressed(Int[])))) == "[]"
     @test Compressed([1.0]) isa Compressed{Vector{Float64}}
     @test Compressed(1).level == 6
     @test_throws "level must be 0 to 9" Compressed(1; level=10)
+end
+
+@testset "settings.compression" begin
+    @test settings.compression == (level=0, rtol=0.0, atol=0.0, n=1000)
+    @test !occursin("DecompressionStream", html(plot.scatter(y=rand(5000))))  # off by default
+    p = plot.scatter(x=1:200, y=rand(50), text=fill("a", 200), marker=Config(color=1:200))
+    with_settings(compression=(level=6, rtol=0.0, atol=0.0, n=100)) do
+        s = html(p)
+        @test count("DecompressionStream", s) == 3  # x, text, and marker.color
+        @test occursin("new Uint8Array(", s) && occursin(".json()", s)
+        @test occursin("\"y\":[", s)  # fewer than n elements
+        @test occursin("new Float64Array(", html(plot.scatter(y=rand(200))))
+    end
+    @test p.data[1].x isa Vector{Int} && p.data[1].marker.color isa Vector{Int}  # the plot itself is unchanged
+    # Tolerances are passed to `min_type`, for automatic and explicit `Compressed`
+    with_settings(compression=(level=6, rtol=1e-5, atol=0.0, n=100)) do
+        @test occursin("new Float32Array(", html(plot.scatter(y=rand(200))))
+        @test occursin("new Float32Array(", json(Compressed([Int64(2)^40 + 1, 0])))
+    end
+    @test occursin("new Float64Array(", json(Compressed([Int64(2)^40 + 1, 0])))
+    with_settings(compression=(level=0, rtol=0.0, atol=0.0, n=1)) do
+        @test !occursin("DecompressionStream", html(p))  # level 0: off
+    end
 end
 
 #-----------------------------------------------------------------------------# Plot methods

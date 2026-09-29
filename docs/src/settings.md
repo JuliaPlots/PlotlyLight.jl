@@ -6,33 +6,10 @@ Occasionally the `PlotlyLight.preset`s aren't enough.  Low level user-configurab
 settings.div::Cobweb.Node           # The plot-div
 settings.layout::EasyConfig.Config  # default `layout` for all plots
 settings.config::EasyConfig.Config  # default `config` for all plots
-settings.js_deps::OrderedDict{Symbol,String} # name => URL of scripts to load before plotting (`:plotly` first)
+settings.js_deps::OrderedDict{Symbol,String}  # name => URL of scripts to load before plotting (`:plotly` first)
+settings.compression::NamedTuple    # (; level, rtol, atol, n): compress every plot's large arrays (see Compression)
 ```
 
 Check out e.g. `PlotlyLight.Settings()` to examine default values.
 
-## Compression
-
-Numeric arrays are written as JSON.  To send one to plotly.js as base64-encoded binary (a plotly.js "typed array") instead, wrap it in `TypedArray`:
-
-```julia
-p = plot.scatter(x = TypedArray(1:10_000), y = TypedArray(randn(10_000)))
-```
-
-It's written in the smallest type plotly.js can decode that holds every value exactly: `UInt8`, `Int8`, `UInt16`, `Int16`, `UInt32`, `Int32`, `Float32`, or `Float64` (plotly.js has no `Float16` or `Int64`).  Full-precision floats come to about half the size of their JSON, but short decimals such as rounded data can be larger than JSON (`0.12` is 4 characters of JSON but 8 bytes as a `Float64`).  plotly.js decodes it without any extra scripts.  To also allow `Float32` when it's close enough, give a relative or absolute tolerance: `TypedArray(y, 1e-5)` or `TypedArray(y, 0.0, 1e-3)`.
-
-Arrays that plotly.js can't decode as typed arrays (`Bool`s, non-numbers, `missing`s, empty arrays, or more than 3 dimensions) are written as JSON.  `typed_array(x; rtol=0.0, atol=0.0)` returns the `(; bdata, dtype, shape)` that is written for `x`.
-
-To compress any value (an array, including one of strings, or a whole `Config`), wrap it in `Compressed`:
-
-```julia
-p = plot.scatter(y = Compressed(cumsum(randn(10^6))), text = Compressed(labels))
-```
-
-Numeric arrays become JavaScript typed arrays (`Uint8Array`, `Float32Array`, `Float16Array`, …) of the same element type, so you choose their size, e.g. `Compressed(Float32.(y))`.  Element types that JavaScript has no array of (e.g. `Int64`) are converted to the smallest type that holds every value exactly.  Matrices and 3-d arrays become arrays of rows, as plotly.js reads them.  Anything else (strings, `Bool`s, `Config`s, …) is compressed as JSON.  Values are never changed.
-
-The bytes are zlib-compressed and base64-encoded, and the browser decompresses them with [`DecompressionStream`](https://developer.mozilla.org/en-US/docs/Web/API/DecompressionStream) (Chrome 80, Firefox 113, Safari 16.4) while drawing the plot.  `Float16Array` needs Chrome 135, Firefox 129, or Safari 18.2.
-
-`Compressed(x; level)` sets the zlib level, from `0` (no compression: the data's binary size, plus a third for base64) to `9` (smallest, and slowest).  The default is `6`.
-
-`Compressed` is usually the smaller of the two.  On a million values it came to 27–52% of the JSON's size (`TypedArray`: 46–77%, or more than the JSON for short decimals), and repetitive data shrinks to almost nothing.  Compressing took up to about half a second per million values at the default level.  Converting floats to `Float32` first, `Compressed(Float32.(y))`, halves them again or better, but rounds each value to about 7 significant digits.
+For `TypedArray` and `Compressed`, which make large plots smaller, see [Compression](compression.md).

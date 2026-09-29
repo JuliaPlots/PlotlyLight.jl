@@ -60,7 +60,7 @@ function image_page(p::Plot, opts::Config)
     deps = OrderedDict(:plotly => file_url(artifact("plotly.min.js")), filter(kv -> kv[1] ≠ :plotly, settings.js_deps)...)
     io = IOBuffer()
     print(io, "<!doctype html><html><head><meta charset=\"utf-8\">")
-    foreach(d -> show(io, MIME("text/html"), d isa InlineScript ? d : h.script(; src=d)), values(deps))
+    foreach(src -> show(io, MIME("text/html"), h.script(; src)), values(deps))
     print(io, """</head><body><pre id="out"></pre><script>(async () => {
         const out = document.getElementById("out");
         const b64 = s => btoa(Array.from(new TextEncoder().encode(s), b => String.fromCharCode(b)).join(""));

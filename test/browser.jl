@@ -15,7 +15,7 @@ const REPORT_JS = """<script>setTimeout(() => {
     const all = sel => [...document.querySelectorAll(sel)];
     const arr = a => a == null ? null : Array.from(a, v => ArrayBuffer.isView(v) || Array.isArray(v) ? arr(v) : v);
     const report = {
-        plots: all(".js-plotly-plot").map(p => p._fullData.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z)}))),
+        plots: all(".js-plotly-plot").map(p => p._fullData.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z), customdata: arr(t.customdata)}))),
         fallbacks: all(".plotlylight-plot-div").filter(d => d.textContent.includes("Loading PlotlyLight.jl plot")).length,
         errors: all(".plotlylight-plot-div pre").map(e => e.textContent),
         plotly_scripts: all("script[src*='plotly']").length,
@@ -132,6 +132,9 @@ else
                 drew(render(chrome, host(html(p_typed))))
                 @test occursin(".arrayBuffer()", html(p_compressed)) && occursin(".json()", html(p_compressed))
                 drew(render(chrome, host(html(p_compressed))))
+                compression = (level=6, rtol=0.0, atol=0.0, n=100)  # settings.compression: x, y, text, and z
+                @test count("DecompressionStream", html(p; compression)) == 4
+                drew(render(chrome, host(html(p; compression))))
             end
         end
 
@@ -144,6 +147,16 @@ else
             report = render(chrome, join(map(_ -> html(p), 1:3)))
             drew(report; n=3)
             @test report["plotly_scripts"] == 1
+        end
+
+        @testset "Compressed Bools" begin
+            b = [true false true; false false true]
+            report = render(chrome, html(plot.scatter(y = 1:3, customdata = Compressed(b[1, :]))(plot.heatmap(z = rand(2, 3), customdata = Compressed(b)))))
+            @test isempty(report["errors"])
+            (scatter, heatmap) = only(report["plots"])
+            @test scatter["customdata"] == [true, false, true]
+            @test all(v -> v isa Bool, scatter["customdata"])  # JS Booleans, not 0/1
+            @test heatmap["customdata"] == [b[1, :], b[2, :]]  # rows
         end
 
         @testset "Compressed Float16 (Float16Array)" begin

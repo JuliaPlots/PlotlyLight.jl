@@ -28,20 +28,13 @@ const PLACEHOLDER = h.div(
 
 const MATHJAX_URL = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"
 
-#-----------------------------------------------------------------------------# InlineScript
-# A script whose code is written into the page, rather than loaded from a URL (e.g. for standalone HTML files)
-struct InlineScript
-    path::String
-end
-Base.show(io::IO, ::MIME"text/html", s::InlineScript) =
-    print(io, "<script>", replace(read(s.path, String), r"</(script)"i => s"<\\/\1"), "</script>")  # can't end the <script> early
-
 #-----------------------------------------------------------------------------# Settings
 Base.@kwdef mutable struct Settings
     div::Node           = h.div(; class="plotlylight-plot-div")
     layout::Config      = Config()
     config::Config      = Config(responsive=true, displaylogo=false)
-    js_deps::OrderedDict{Symbol, Union{String, InlineScript}} = OrderedDict(:plotly => PLOTLY_URL)
+    js_deps::OrderedDict{Symbol, String} = OrderedDict(:plotly => PLOTLY_URL)
+    compression::@NamedTuple{level::Int, rtol::Float64, atol::Float64, n::Int} = (level=0, rtol=0.0, atol=0.0, n=1000)
 end
 settings::Settings = Settings()
 
@@ -102,6 +95,7 @@ end
 function apply!(p::Plot, s::Settings)
     p.layout = deepmerge(s.layout, p.layout)
     p.config = deepmerge(s.config, p.config)
+    s.compression.level > 0 && foreach(t -> compress!(t, s.compression), p.data)
     return p
 end
 apply(p::Plot, s::Settings) = apply!(merge!(Plot(), p), s)
@@ -166,11 +160,9 @@ plot_id() = "plotlylight-" * join(rand(RandomDevice(), 'a':'z', 10))
 
 # The plot's div and NewPlot (which loads the scripts)
 function html_div(o::Plot, id=plot_id())
-    deps = collect(values(settings.js_deps))
     h.div(class="plotlylight-parent",
-        filter(d -> d isa InlineScript, deps)...,
         settings.div(PLACEHOLDER; id),
-        NewPlot(apply(o, settings), id, filter(d -> d isa String, deps))
+        NewPlot(apply(o, settings), id, collect(values(settings.js_deps)))
     )
 end
 
@@ -234,7 +226,6 @@ preset = (
         none!       = () -> (delete!(settings.js_deps, :plotly); nothing),
         cdn!        = () -> plotly_source!(PLOTLY_URL),
         local!      = () -> plotly_source!(artifact("plotly.min.js")),
-        standalone! = () -> plotly_source!(InlineScript(artifact("plotly.min.js")))
     ),
     display = (
         fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),

@@ -146,21 +146,20 @@ end
 const INFLATE_JS = "new Response(new Blob([Uint8Array.fromBase64?.(b) ?? Uint8Array.from(atob(b), c => c.charCodeAt(0))])" *
     ".stream().pipeThrough(new DecompressionStream(\"deflate\")))"
 
-# JS: the flat, row-major typed array `x` nested into rows of subarrays (as plotly.js reads matrices and 3-d arrays)
-_reshape_js(dims) = length(dims) == 1 ?
+# JS: the flat, row-major array `x` nested into rows (as plotly.js reads matrices and 3-d arrays).  `slice` is the
+# method that takes a row: "subarray" (a view) for typed arrays, "slice" (a copy) for Arrays.
+_reshape_js(dims; slice="subarray") = length(dims) == 1 ?
     "return x;" :
     """
     const rows = (x, dims) => Array.from({length: dims[0]}, (_, i) => {
-        const n = x.length / dims[0], row = x.subarray(i * n, (i + 1) * n);
+        const n = x.length / dims[0], row = x.$slice(i * n, (i + 1) * n);
         return dims.length == 2 ? row : rows(row, dims.slice(1));
     });
     return rows(x, $(json(collect(dims))));
     """
 
-# Numeric arrays become JS typed arrays: their own eltype where JS has an array of it, otherwise (e.g. Int64) the
-# smallest DTYPE that holds every value.  (Bools, empty arrays, etc. that no DTYPE holds are compressed as JSON.)
-function inflate_js(c::Compressed{<:AbstractArray{<:Real}})
-    T = haskey(JS_ARRAYS, eltype(c.x)) ? eltype(c.x) : min_type(c.x)
+function inflate_js(c::Compressed{<:AbstractArray{<:Real}}; rtol=0.0, atol=0.0)
+    T = haskey(JS_ARRAYS, eltype(c.x)) ? eltype(c.x) : min_type(c.x; rtol, atol)
     isnothing(T) && return inflate_json(c)
     y = convert(Array{T}, _rowmajor(c.x))
     b64 = base64encode(zlib_compress(reinterpret(UInt8, vec(y)), c.level))
@@ -172,12 +171,38 @@ function inflate_js(c::Compressed{<:AbstractArray{<:Real}})
     """)
 end
 
+# Bools: one byte each (zlib shrinks the 0s and 1s to about a bit each), read back as `true`/`false`
+function inflate_js(c::Compressed{<:AbstractArray{Bool}}; kw...)
+    y = convert(Array{UInt8}, _rowmajor(c.x))
+    b64 = base64encode(zlib_compress(vec(y), c.level))
+    RawJS("""
+    (await (async b => {
+        const x = Array.from(new Uint8Array(await $INFLATE_JS.arrayBuffer()), v => v === 1);
+        $(_reshape_js(size(c.x); slice="slice"))
+    })("$b64"))
+    """)
+end
+
 # Everything else is compressed as JSON
-inflate_js(c::Compressed) = inflate_json(c)
+inflate_js(c::Compressed; kw...) = inflate_json(c)
 
 function inflate_json(c::Compressed)
     b64 = base64encode(zlib_compress(codeunits(json(c.x)), c.level))
     RawJS("""(await (b => $INFLATE_JS.json())("$b64"))""")
 end
 
-json(io::IO, c::Compressed) = json(io, inflate_js(c))
+json(io::IO, c::Compressed) = json(io, inflate_js(c; settings.compression.rtol, settings.compression.atol))
+
+# `settings.compression`: the trace's arrays (including nested ones, e.g. `marker.color`) with at least `n` elements
+function compress!(trace::AbstractDict, (; level, rtol, atol, n))
+    foreach(collect(keys(trace))) do k
+        v = trace[k]
+        if v isa AbstractDict
+            compress!(v, (; level, rtol, atol, n))
+        elseif v isa AbstractArray && length(v) ≥ n
+            T = eltype(v) <: Real ? min_type(v; rtol, atol) : nothing
+            trace[k] = Compressed(isnothing(T) ? v : convert(AbstractArray{T}, v); level)
+        end
+    end
+    return trace
+end

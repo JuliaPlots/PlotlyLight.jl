@@ -11,6 +11,7 @@ makedocs(
         "templates.md",
         "saving.md",
         "source.md",
+        "compression.md",
         "settings.md",
     ]
 )
