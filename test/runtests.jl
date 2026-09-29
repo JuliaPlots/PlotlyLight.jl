@@ -232,6 +232,16 @@ end
     @test_nowarn PlotlyLight.check_attributes(:scatter; x=1:10)
 end
 
+@testset "schema" begin
+    @test PlotlyLight.schema().traces.scatter.attributes.x.valType == "data_array"
+    @test Set(Symbol.(keys(PlotlyLight.schema().traces))) == Set(PlotlyLight.TRACE_TYPES)  # src/trace_types.jl is up to date
+
+    # Without JSON loaded: an error saying to load it (checked in a fresh process, since JSON is loaded here)
+    code = "using PlotlyLight; try PlotlyLight.schema() catch e; print(sprint(showerror, e)) end"
+    out = read(`$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) -e $code`, String)
+    @test contains(out, "requires JSON.jl.  Run `using JSON`")
+end
+
 @testset "settings defaults are merged recursively" begin
     with_settings(layout=Config(xaxis=Config(showgrid=false)), config=Config(toImageButtonOptions=Config(format="svg"))) do
         p = plot.scatter(y=1:3)

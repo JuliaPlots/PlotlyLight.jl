@@ -19,7 +19,6 @@ artifact(x...) = joinpath(artifact"plotly_artifacts", x...)
 
 const PLOTLY_VERSION = VersionNumber(readchomp(artifact("version.txt")))
 const PLOTLY_URL = "https://cdn.plot.ly/plotly-$PLOTLY_VERSION.min.js"
-const SCHEMA_FILE = artifact("plot-schema.json")
 
 const PLACEHOLDER = h.div(
     h.p("Loading PlotlyLight.jl plot..."),
@@ -39,13 +38,25 @@ end
 settings::Settings = Settings()
 
 #-----------------------------------------------------------------------------# utils/other
-unknown_trace(t) = "`$t` is not a plotly.js trace type. See `keys(PlotlyLight.Schema.traces)`."
+unknown_trace(t) = "`$t` is not a plotly.js trace type. See `PlotlyLight.TRACE_TYPES`."
+
+"""
+    PlotlyLight.schema()
+
+The plotly.js plot schema (the bundled `plot-schema.json`), e.g. `PlotlyLight.schema().traces.scatter.attributes`.
+Requires JSON.jl to be loaded (`using JSON`).
+"""
+function schema()
+    ext = Base.get_extension(@__MODULE__, :PlotlyLightJSONExt)
+    isnothing(ext) && error("`PlotlyLight.schema()` requires JSON.jl.  Run `using JSON` (installing it first if needed) and try again.")
+    return ext.schema()
+end
 
 function check_attributes(type; kw...)
     t = Symbol(type)
-    haskey(Schema.traces, t) || return @warn(unknown_trace(t))
-    attrs = Schema.traces[t][:attributes]
-    foreach(k -> haskey(attrs, k) || @warn("`$t` does not have attribute `$k`."), keys(kw))
+    t in TRACE_TYPES || return @warn(unknown_trace(t))
+    attrs = schema()["traces"][string(t)]["attributes"]
+    foreach(k -> haskey(attrs, string(k)) || @warn("`$t` does not have attribute `$k`."), keys(kw))
 end
 
 # `b` merged into `a`, recursing into nested dicts rather than replacing them
@@ -79,10 +90,10 @@ Base.:(==)(a::Plot, b::Plot) = all(getfield(a,f) == getfield(b,f) for f in field
 # E.g. `plot.surface(...)`, trace types autocomplete from propertynames(::Plot)
 function Base.getproperty(p::Plot, x::Symbol)
     x in fieldnames(Plot) && return getfield(p, x)
-    haskey(Schema.traces, x) && return (; kw...) -> p(plot(; type=x, kw...))
+    x in TRACE_TYPES && return (; kw...) -> p(plot(; type=x, kw...))
     throw(ArgumentError("`Plot` has no property `$x`.  Can be `data`, `layout`, `config`, or a trace name."))
 end
-Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., keys(Schema.traces)...)
+Base.propertynames(::Plot) = vcat(fieldnames(Plot)..., TRACE_TYPES...)
 
 # `b`'s traces and nested layout/config are copied, so later changes to `b` don't show up in `a`
 function Base.merge!(a::Plot, b::Plot)
@@ -102,7 +113,7 @@ apply(p::Plot, s::Settings) = apply!(merge!(Plot(), p), s)
 
 #------------------------------------------------------------------------------# includes
 include("json.jl")
-include("Schema.jl")
+include("trace_types.jl")
 include("images.jl")
 
 #-----------------------------------------------------------------------------# plot
@@ -111,10 +122,10 @@ function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
     Plot(data, layout, config)
 end
 
-Base.propertynames(::typeof(plot)) = collect(keys(Schema.traces))
+Base.propertynames(::typeof(plot)) = collect(TRACE_TYPES)
 
 function Base.getproperty(::typeof(plot), type::Symbol)
-    haskey(Schema.traces, type) || throw(ArgumentError(unknown_trace(type)))
+    type in TRACE_TYPES || throw(ArgumentError(unknown_trace(type)))
     return (; kw...) -> plot(; type, kw...)
 end
 
