@@ -11,10 +11,9 @@ using Cobweb: Cobweb, h, Node
 using Base64: base64encode
 
 #-----------------------------------------------------------------------------# exports
-export Config, preset, Plot, plot
+export Config, TypedArray, typed_array, preset, Plot, plot
 
 #-----------------------------------------------------------------------------# plotly.js artifact
-# Paths are looked up when used rather than stored at precompile time, so they stay right if the depot moves
 artifact(x...) = joinpath(artifact"plotly_artifacts", x...)
 
 const PLOTLY_VERSION = VersionNumber(readchomp(artifact("version.txt")))
@@ -34,26 +33,20 @@ Base.@kwdef mutable struct Settings
     layout::Config      = Config()
     config::Config      = Config(responsive=true, displaylogo=false)
     js_deps::OrderedDict{Symbol, String} = OrderedDict(:plotly => PLOTLY_URL)
-    compress::Bool      = false
 end
 settings::Settings = Settings()
 
 #-----------------------------------------------------------------------------# utils/other
-function unknown_trace_msg(t)
-    lc = Symbol(lowercase(string(t)))
-    hint = haskey(Schema.traces, lc) ? "  Did you mean `$lc`?" : ""
-    "`$t` is not a plotly.js trace type.$hint  See `keys(PlotlyLight.Schema.traces)`."
-end
+unknown_trace(t) = "`$t` is not a plotly.js trace type. See `keys(PlotlyLight.Schema.traces)`."
 
 function check_attributes(type; kw...)
     t = Symbol(type)
-    haskey(Schema.traces, t) || return @warn(unknown_trace_msg(t))
+    haskey(Schema.traces, t) || return @warn(unknown_trace(t))
     attrs = Schema.traces[t][:attributes]
     foreach(k -> haskey(attrs, k) || @warn("`$t` does not have attribute `$k`."), keys(kw))
 end
 
-# `b` merged into `a`, recursing into nested dicts rather than replacing them.  `b`'s dicts are copied into `a`, so
-# `a` never shares them with `b`.  (Other values, e.g. data arrays, are shared as usual.)
+# `b` merged into `a`, recursing into nested dicts rather than replacing them
 function deepmerge!(a::Config, b::AbstractDict)
     foreach(pairs(b)) do (k, v)
         old = get(a, k, nothing)
@@ -83,6 +76,7 @@ save(file::AbstractString, p::Plot) = save(p, file)
 (p::Plot)(data::Config) = (push!(p.data, data); return p)
 (p::Plot)(p2::Plot) = merge!(p, p2)
 
+# E.g. `plot.surface(...)`, trace types autocomplete from propertynames(::Plot)
 function Base.getproperty(p::Plot, x::Symbol)
     x in fieldnames(Plot) && return getfield(p, x)
     haskey(Schema.traces, x) && return (; kw...) -> p(plot(; type=x, kw...))
@@ -111,7 +105,6 @@ include("Schema.jl")
 
 #-----------------------------------------------------------------------------# plot
 function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
-    check_attributes(type; kw...)
     data = isempty(kw) ? Config[] : [Config(; type, kw...)]
     Plot(data, layout, config)
 end
@@ -119,7 +112,7 @@ end
 Base.propertynames(::typeof(plot)) = collect(keys(Schema.traces))
 
 function Base.getproperty(::typeof(plot), type::Symbol)
-    haskey(Schema.traces, type) || throw(ArgumentError(unknown_trace_msg(type)))
+    haskey(Schema.traces, type) || throw(ArgumentError(unknown_trace(type)))
     return (; kw...) -> plot(; type, kw...)
 end
 
@@ -138,7 +131,7 @@ function Base.show(io::IO, ::MIME"text/html", o::NewPlot)
         const div = document.getElementById("$id");
         try {
             const loaded = window.__plotlylight_scripts ??= {};
-            await Promise.all($sources.map(src => loaded[src] ??= new Promise(resolve => {
+            await Promise.all($(json(sources)).map(src => loaded[src] ??= new Promise(resolve => {
                 const s = document.createElement("script");
                 s.src = src; s.async = false; s.onload = s.onerror = resolve;
                 document.head.appendChild(s);
@@ -208,6 +201,9 @@ Base.display(::REPL.REPLDisplay, o::Plot) = Cobweb.preview(html_page(o))
 # Templates are inserted verbatim (they're JSON already)
 template!(t) = (settings.layout.template = RawJS(read(artifact("templates", "$t.json"), String)); nothing)
 
+# plotly.js loads before the other scripts, which may use it
+plotly_source!(src) = (settings.js_deps = OrderedDict(:plotly => src, filter(p -> p[1] != :plotly, settings.js_deps)...); nothing)
+
 preset = (
     template = (
         none!           = () -> (haskey(settings.layout, :template) && delete!(settings.layout, :template); nothing),
@@ -223,9 +219,9 @@ preset = (
         ygridoff!       = () -> template!(:ygridoff)
     ),
     source = (
-        none!       = () -> delete!(settings.js_deps, :plotly),
-        cdn!        = () -> (settings.js_deps[:plotly] = PLOTLY_URL),
-        local!      = () -> (settings.js_deps[:plotly] = artifact("plotly.min.js"))
+        none!       = () -> (delete!(settings.js_deps, :plotly); nothing),
+        cdn!        = () -> plotly_source!(PLOTLY_URL),
+        local!      = () -> plotly_source!(artifact("plotly.min.js"))
     ),
     display = (
         fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),

@@ -1,7 +1,18 @@
-using PlotlyLight, Cobweb, Test, Aqua, Dates, Random
+using PlotlyLight, Cobweb, Test, Aqua, Dates, Random, JSON, Base64
 using PlotlyLight: settings, Plot, json
 
 html(x) = repr("text/html", x)
+
+# `f()` with `settings` replaced by `Settings(; kw...)`, restored afterwards
+function with_settings(f; kw...)
+    old = PlotlyLight.settings
+    PlotlyLight.settings = PlotlyLight.Settings(; kw...)
+    try
+        f()
+    finally
+        PlotlyLight.settings = old
+    end
+end
 
 
 #-----------------------------------------------------------------------------# json
@@ -48,109 +59,41 @@ html(x) = repr("text/html", x)
     @test_throws ArgumentError json(Config(x = Some(1)))
 end
 
-@testset "JSTypedArray" begin
-    ta(T, x) = json(PlotlyLight.JSTypedArray{T}(x))
-    @test ta(Int8, [1, -1]) == "{\"dtype\":\"int8\",\"bdata\":\"Af8=\",\"shape\":\"2\"}"
-    @test ta(Float32, [1.5, 2]) == "{\"dtype\":\"float32\",\"bdata\":\"AADAPwAAAEA=\",\"shape\":\"2\"}"
-    @test ta(UInt8, [1 2; 3 4]) == "{\"dtype\":\"uint8\",\"bdata\":\"AQIDBA==\",\"shape\":\"2,2\"}"  # row-major
-    @test ta(UInt8, reshape(1:8, 2, 2, 2)) == "{\"dtype\":\"uint8\",\"bdata\":\"AQUDBwIGBAg=\",\"shape\":\"2,2,2\"}"
-    @test json(PlotlyLight.JSTypedArray(Float64[1, 2])) == "{\"dtype\":\"float64\",\"bdata\":\"AAAAAAAA8D8AAAAAAAAAQA==\",\"shape\":\"2\"}"
-    # plotly.js has no 16-bit floats, 64-bit integers, or more than 3 dimensions
-    @test_throws "no typed array of `Float16`" PlotlyLight.JSTypedArray{Float16}([1.0])
-    @test_throws "no typed array of `Int64`" PlotlyLight.JSTypedArray([1])
-    @test_throws "at most 3 dimensions" PlotlyLight.JSTypedArray{Float32}(zeros(1, 1, 1, 1))
-end
+@testset "TypedArray" begin
+    ta(x) = json(TypedArray(x))
+    # Written in the smallest type plotly.js can decode that holds every value exactly
+    @test ta([1, -1]) == "{\"bdata\":\"Af8=\",\"dtype\":\"int8\",\"shape\":\"2\"}"
+    @test ta([1.5, 2]) == "{\"bdata\":\"AADAPwAAAEA=\",\"dtype\":\"float32\",\"shape\":\"2\"}"
+    @test ta([1 2; 3 4]) == "{\"bdata\":\"AQIDBA==\",\"dtype\":\"uint8\",\"shape\":\"2,2\"}"  # row-major
+    @test ta([0.1, 0.2]) == "{\"bdata\":\"mpmZmZmZuT+amZmZmZnJPw==\",\"dtype\":\"float64\",\"shape\":\"2\"}"
+    @test ta(reshape(1:8, 2, 2, 2)) == "{\"bdata\":\"AQUDBwIGBAg=\",\"dtype\":\"uint8\",\"shape\":\"2,2,2\"}"
+    @test ta([1, -1]) == json(typed_array([1, -1]))
+    @test occursin("\"y\":{\"bdata\":\"AQID\"", html(plot.scatter(y=TypedArray(1:3))))
+    # Tolerances allow Float32
+    @test occursin("\"float32\"", json(TypedArray([0.1, 0.2], 1e-5)))
+    @test occursin("\"float32\"", json(TypedArray([0.1, 0.2], 0.0, 1e-5)))
+    # Arrays plotly.js can't decode as typed arrays stay JSON
+    @test ta([true, false]) == "[true,false]"
+    @test ta(Int[]) == "[]"
+    @test ta(["a", "b"]) == "[\"a\",\"b\"]"
+    @test ta([1, missing]) == "[1,null]"
+    @test ta(zeros(1, 1, 1, 1)) == "[[[[0]]]]"
 
-@testset "compress" begin
-    compress = PlotlyLight.compress
-    cjson(x; kw...) = json(compress(x; min_length=0, kw...))
-    dtype(x; kw...) = match(r"\"dtype\":\"(\w+)\"", cjson(Config(x=x); kw...))[1]
-
-    # An object's numeric arrays become typed arrays, including in nested objects
-    @test cjson([1, 2]) == json(PlotlyLight.JSTypedArray{UInt8}([1, 2]))
-    @test cjson(Config(x=[1, 2])) == "{\"x\":$(cjson([1, 2]))}"
-    @test cjson([Config(x=[1, 2])]) == "[$(cjson(Config(x=[1, 2])))]"
-    @test cjson(Config(m=Config(color=[1, 2]))) == "{\"m\":$(cjson(Config(color=[1, 2])))}"
-    @test cjson(Config(dims=[Config(values=[1, 2])])) == "{\"dims\":[$(cjson(Config(values=[1, 2])))]}"
-    @test cjson((x=[1, 2],)) == cjson(Config(x=[1, 2]))
-    @test cjson(:x => [1, 2]) == cjson(Config(x=[1, 2]))
-
-    # Left as JSON: short arrays, Bools, strings, mixed types, and arrays inside arrays (plotly.js wouldn't decode them)
-    @test json(compress(Config(x=1:3); min_length=4)) == "{\"x\":[1,2,3]}"
-    @test cjson(Config(x=[true, false])) == "{\"x\":[true,false]}"
-    @test cjson(Config(x=["a", "b"])) == "{\"x\":[\"a\",\"b\"]}"
-    @test cjson(Config(x=Any["a", 1])) == "{\"x\":[\"a\",1]}"
-    @test cjson(Config(z=[[1, 2], [3, 4]])) == "{\"z\":[[1,2],[3,4]]}"
-    @test_throws MethodError compress([1, 2]; float_rtl=1e-5)  # typos aren't ignored
-
-    # Smallest type that holds the data.  By default floats are only narrowed when it's exact.
-    @test dtype([-1, 300]) == "int16"
-    @test dtype(1:200) == "uint8"
+    min_type = PlotlyLight.min_type
+    @test min_type([-1, 300]) == Int16
+    @test min_type(1:200) == UInt8
     big = Int64(2)^40  # not `2^40`, which overflows where Int is Int32 (32-bit)
-    @test dtype([0, big]) == "float32"  # no 64-bit integers, but these are exact as Float32
-    @test dtype([big, big + 1000]) == "float64"
-    @test dtype([1.0, 2.0, NaN, Inf]) == "float32"
-    @test dtype(Float16[1, 2]) == "float32"
-    @test dtype([0.1, 0.2]) == "float64"
-    # With `float_rtol`, Float32 if its error is ≤ float_rtol of the data's range
-    @test dtype([0.1, 0.2]; float_rtol=1e-5) == "float32"
-    @test dtype(fill(0.1, 3); float_rtol=1e-5) == "float32"
-    @test dtype(45 .+ range(0, 0.001, length=100); float_rtol=1e-5) == "float64"  # large offset, small range
-
-    # Plots are compressed with the defaults when displayed, for arrays of at least 100
-    @test occursin("\"bdata\"", html(plot.scatter(y=1:100)))
-    @test !occursin("\"bdata\"", html(plot.scatter(y=1:99)))
-    # ...and already-compressed plots are left as they are
-    p = compress(plot.scatter(y=[0.1, 0.2]); min_length=0, float_rtol=1e-5)
-    @test occursin("\"float32\"", html(p))
-
-    # ranges=true: evenly spaced `x`/`y` become `x0`/`dx`, where plotly.js rebuilds exactly the same values
-    trace(p; kw...) = only(compress(p; ranges=true, kw...).data)
-    t = trace(plot.scatter(x=1:200, y=rand(200)))
-    @test (t.x0, t.dx) == (1, 1) && !haskey(t, :x)
-    @test !haskey(only(compress(plot.scatter(x=1:200, y=rand(200))).data), :x0)  # off by default
-    t = trace(plot.scatter(x=rand(10), y=0:0.5:4.5))
-    @test (t.y0, t.dy) == (0.0, 0.5) && !haskey(t, :y)
-    t = trace(plot.scatter(x=1:10, y=1:10))  # not both: one has to give the number of points
-    @test haskey(t, :x0) && haskey(t, :y) && !haskey(t, :y0)
-    @test haskey(trace(plot.scatter(x=1:10, y=rand(5))), :x0)  # `x` would be cut to 5 points anyway
-    @test haskey(trace(plot.scatter(x=1:5, y=rand(10))), :x)  # 10 points: `x0`/`dx` would add 5 more
-    @test haskey(trace(plot.scatter(x=0:0.1:1, y=rand(11))), :x)  # 0 + 3 * 0.1 != 0.3
-    @test haskey(trace(plot.scatter(x=1:10)), :x)  # nothing gives the number of points
-    @test haskey(trace(plot.box(x=1:10, y=rand(10))), :x)  # box's x0/dx position whole boxes
-    t = trace(plot.heatmap(x=1:4, y=10:10:30, z=rand(3, 4)))  # one per column/row of z
-    @test (t.x0, t.dx, t.y0, t.dy) == (1, 1, 10, 10)
-    @test haskey(trace(plot.heatmap(x=0:4, z=rand(3, 4))), :x)  # 5 cell edges, not centers
-    @test haskey(trace(plot.heatmap(x=1:4, z=rand(3, 4), transpose=true)), :x)
-    p = plot.scatter(x=1:10, y=rand(10))
-    compress(p; ranges=true)
-    @test haskey(p.data[1], :x)  # the plot itself is unchanged
+    @test min_type([0, big]) == Float32  # no 64-bit integers, but these are exact as Float32
+    @test min_type([big, big + 1000]) == Float64
+    @test min_type([1.0, 2.0, NaN, Inf]) == Float32
+    @test min_type(Float16[0.5, 1.5]) == Float32  # no Float16
+    @test min_type([0.1, 0.2]) == Float64
+    # With a tolerance, Float32 if it's within `rtol`/`atol` of every value
+    @test min_type([0.1, 0.2]; rtol=1e-5) == Float32
+    @test min_type([0.1, 0.2]; atol=1e-5) == Float32
 end
 
 #-----------------------------------------------------------------------------# Plot methods
-@testset "compress_ranges!" begin
-    c(; kw...) = PlotlyLight.compress_ranges!(Config(; kw...))
-    th = collect(0.0:36:324)
-    # polar: `r` becomes `r0`/`dr` (`theta` counts the points), and then `theta` can't be compressed too
-    foreach((:scatterpolar, :scatterpolargl, :barpolar)) do type
-        t = c(; type, r=1:10, theta=th)
-        @test (t.r0, t.dr) == (1, 1) && !haskey(t, :r) && haskey(t, :theta)
-    end
-    # `theta` in degrees is built in radians, and only compressed if that gives exactly the same values
-    rad = PlotlyLight.deg2rad_js
-    @test haskey(c(type=:scatterpolar, r=rand(10), theta=th), :theta) == (map(i -> rad(0.0) + i * rad(36.0), 0:9) != rad.(th))
-    @test !haskey(c(type=:scatterpolar, r=rand(10), theta=0:0.5:4.5, thetaunit="radians"), :theta)
-    @test !haskey(c(type=:scatterpolar, r=1:10, theta=rand(5)), :r)  # `r` would be cut to 5 points anyway
-    @test haskey(c(type=:scatterpolar, r=1:5, theta=rand(10)), :r)  # 10 points: `r0`/`dr` would add 5 more
-    @test haskey(c(type=:scatterpolar, r=1:10), :r)  # nothing else to count the points
-    # quiver works like scatter
-    t = c(type=:quiver, x=1:5, y=rand(5), u=rand(5), v=rand(5))
-    @test (t.x0, t.dx) == (1, 1) && !haskey(t, :x)
-    # carpet/contourcarpet never build `a` from `a0`/`da`
-    @test haskey(c(type=:carpet, a=1:5, b=1:5, y=rand(5, 5)), :a)
-    @test haskey(c(type=:contourcarpet, a=1:5, b=1:5, z=rand(5, 5)), :a)
-end
-
 @testset "Plot methods" begin
     p = plot.scatter(x=1:10)
     @test p isa Plot
@@ -190,28 +133,28 @@ end
     @test a.layout.xaxis == Config(type="log", title=Config(text="b"))  # nested layout is merged, not replaced
 
     # Typos are errors naming the problem, not a closure or KeyError
-    @test_throws "has no field `lyout`" p.lyout
-    @test_throws "`lines` is not a plotly.js trace type" p.lines
+    @test_throws "`Plot` has no property `lyout`" p.lyout
+    @test_throws "`Plot` has no property `lines`" p.lines
 end
 
 @testset "plot" begin
-    @test_warn "`scatter` does not have attribute `X`" plot.scatter(X=1:10);
     @test_nowarn plot.scatter(x=1:10);
     @test contains(json(plot(y=1:10).data), "scatter")
     @test_throws "`lines` is not a plotly.js trace type" plot.lines
-    @test_warn "Did you mean `scatter`?" plot(type="Scatter", y=1:3)
-    @test_warn "`foo` is not a plotly.js trace type" plot(type=:foo)
+    @test_warn "`scatter` does not have attribute `X`" PlotlyLight.check_attributes(:scatter; X=1:10)
+    @test_warn "`foo` is not a plotly.js trace type" PlotlyLight.check_attributes(:foo)
+    @test_nowarn PlotlyLight.check_attributes(:scatter; x=1:10)
 end
 
 @testset "settings defaults are merged recursively" begin
-    PlotlyLight.with_settings(layout=Config(xaxis=Config(showgrid=false)), config=Config(toImageButtonOptions=Config(format="svg"))) do s
+    with_settings(layout=Config(xaxis=Config(showgrid=false)), config=Config(toImageButtonOptions=Config(format="svg"))) do
         p = plot.scatter(y=1:3)
         p.layout.xaxis.title.text = "X"
         p.config.toImageButtonOptions.scale = 2
         out = html(p)
         @test occursin("\"xaxis\":{\"showgrid\":false,\"title\":{\"text\":\"X\"}}", out)
         @test occursin("\"toImageButtonOptions\":{\"format\":\"svg\",\"scale\":2}", out)
-        @test s.layout == Config(xaxis=Config(showgrid=false))  # settings are untouched
+        @test settings.layout == Config(xaxis=Config(showgrid=false))  # settings are untouched
     end
 end
 
@@ -250,7 +193,7 @@ end
     s = html(p)
     @test !occursin("<script src", s)
     # The div explains itself until the plot draws, and failures replace it with the reason
-    @test occursin("class=\"plotlylight-fallback\"", s)
+    @test occursin("Loading PlotlyLight.jl plot...", s)
     @test occursin("PlotlyLight couldn't draw this plot: ", s)
     @test occursin("\"$(PlotlyLight.PLOTLY_URL)\"", s)
     # Full pages (save, REPL) work the same way
@@ -261,40 +204,25 @@ end
 end
 
 @testset "preset" begin
-    foreach((:template, :source)) do g
-        group = getproperty(preset, g)
-        foreach(name -> @test(isnothing(getproperty(group, name)())), propertynames(group))
-    end
+    foreach(name -> @test(isnothing(getproperty(preset.template, name)())), propertynames(preset.template))
+    @test occursin("\"template\":{", html(plot.scatter(y=1:3)))  # templates are inserted as JSON
+    preset.template.none!()
+    @test !occursin("\"template\"", html(plot.scatter(y=1:3)))
+
+    foreach(name -> @test(isnothing(getproperty(preset.source, name)())), propertynames(preset.source))
+    preset.source.none!()
+    @test isempty(settings.js_deps)
     preset.source.local!()
     @test settings.js_deps[:plotly] == PlotlyLight.artifact("plotly.min.js")
     preset.source.none!()
-    @test isempty(settings.js_deps)
     preset.display.mathjax!()
     preset.source.cdn!()
     @test collect(settings.js_deps) == [:plotly => PlotlyLight.PLOTLY_URL, :mathjax => PlotlyLight.MATHJAX_URL]  # plotly.js first
     delete!(settings.js_deps, :mathjax)
-    preset.template.none!()
 
-    # Discoverable: tab completion (propertynames) and display list every preset
-    @test propertynames(preset) == [:display, :source, :template]
+    # Discoverable with tab completion
+    @test propertynames(preset) == (:template, :source, :display)
     @test :plotly_dark! in propertynames(preset.template)
-    @test occursin("template: ggplot2!, ", repr("text/plain", preset))
-    @test repr(preset.template.ggplot2!) == "preset.template.ggplot2!"
-    @test_throws "There's no `preset.tempalte`" preset.tempalte
-    @test_throws "There's no `preset.template.ggplto2!`" preset.template.ggplto2!
-
-    # Other modules can add presets, and groups
-    @eval module PresetExtension
-        import PlotlyLight
-        PlotlyLight.preset!(::Val{:template}, ::Val{:big_font}) =
-            (PlotlyLight.settings.layout.template = PlotlyLight.Config(layout=(; font=(; size=20))); nothing)
-        PlotlyLight.preset!(::Val{:extra}, ::Val{:echo}, x) = x
-    end
-    @test :big_font! in propertynames(preset.template)
-    @test preset.extra.echo!(1) == 1
-    preset.template.big_font!()
-    @test occursin("\"font\":{\"size\":20}", html(plot.scatter(y=1:3)))
-    preset.template.none!()
 end
 
 #-----------------------------------------------------------------------------# browser

@@ -25,10 +25,10 @@ file_url(path) = "file://" * replace(Sys.iswindows() ? "/" * replace(abspath(pat
 # any typed arrays).  Base64 so the JSON survives Chrome's `--dump-dom` HTML escaping.
 const REPORT_JS = """<script>setTimeout(() => {
     const all = sel => [...document.querySelectorAll(sel)];
-    const arr = a => a == null ? null : Array.from(a, v => ArrayBuffer.isView(v) || Array.isArray(v) ? Array.from(v) : v);
+    const arr = a => a == null ? null : Array.from(a, v => ArrayBuffer.isView(v) || Array.isArray(v) ? arr(v) : v);
     const report = {
         plots: all(".js-plotly-plot").map(p => p._fullData.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z)}))),
-        fallbacks: all(".plotlylight-fallback").length,
+        fallbacks: all(".plotlylight-plot-div").filter(d => d.textContent.includes("Loading PlotlyLight.jl plot")).length,
         errors: all(".plotlylight-plot-div pre").map(e => e.textContent),
         plotly_scripts: all("script[src*='plotly']").length,
     };
@@ -115,16 +115,23 @@ else
     @testset "browser: $chrome" begin
         local_plotly = file_url(PlotlyLight.artifact("plotly.min.js"))
         tricky = ["say \"hi\"", "back\\slash", "new\nline", "</script><b>x</b>", "</script x", "a<br>b", "😀", "tab\there"]
-        y = 45 .+ (1:200) ./ 1e5  # stays Float64 even with `compress(p; float_rtol=1e-5)`
+        y = 45 .+ (1:200) ./ 1e5
         text = [tricky; string.("p", 8:200)]
         z = reshape(1.0:300, 3, 100)
-        p = plot.scatter(x = 1:200, y = y, text = text)(plot.heatmap(z = z))
+        img = reshape(UInt8.(1:24), 2, 4, 3)  # rows × columns × rgb
+        p = plot.scatter(x = 1:200, y = y, text = text)(plot.heatmap(z = z))(plot.image(z = img))
+        p_typed = plot.scatter(x = TypedArray(1:200), y = TypedArray(y), text = text)(plot.heatmap(z = TypedArray(z)))(
+            plot.image(z = TypedArray(img)))
 
         # `f()` with default settings, local plotly.js, and `kw` overrides
         function with_defaults(f; kw...)
-            defaults = PlotlyLight.Settings(; js_deps=PlotlyLight.OrderedDict(:plotly => local_plotly))
-            fields = Dict(k => getfield(defaults, k) for k in fieldnames(PlotlyLight.Settings))
-            PlotlyLight.with_settings(_ -> f(); merge(fields, Dict(kw))...)
+            old = PlotlyLight.settings
+            PlotlyLight.settings = PlotlyLight.Settings(; js_deps=PlotlyLight.OrderedDict(:plotly => local_plotly), kw...)
+            try
+                f()
+            finally
+                PlotlyLight.settings = old
+            end
         end
         html(x; kw...) = with_defaults(() -> repr("text/html", x); kw...)
 
@@ -133,18 +140,19 @@ else
             @test length(report["plots"]) == n
             @test report["fallbacks"] == 0
             @test isempty(report["errors"])
-            scatter, heatmap = first(report["plots"])
+            scatter, heatmap, image = first(report["plots"])
             @test scatter["x"] == 1:200
             @test scatter["y"] == y
             @test scatter["text"] == text
             @test heatmap["z"] == [z[i, :] for i in 1:3]  # rows
+            @test image["z"] == [[img[i, j, :] for j in 1:4] for i in 1:2]  # z[i][j] is the color of pixel (i, j)
         end
 
         for (name, host) in ["static page" => static, "AMD (require.js) page" => amd, "Pluto" => pluto,
                              "re-created scripts" => recreate]
             @testset "$name" begin
                 drew(render(chrome, host(html(p))))
-                drew(render(chrome, host(html(PlotlyLight.compress(p; float_rtol=1e-5)))))
+                drew(render(chrome, host(html(p_typed))))
             end
         end
 
@@ -176,8 +184,7 @@ else
             report = render(chrome, html(p; js_deps=PlotlyLight.OrderedDict(:plotly => missing_plotly)))
             @test isempty(report["plots"])
             @test report["fallbacks"] == 0
-            @test only(report["errors"]) == "PlotlyLight couldn't draw this plot: plotly.js didn't load from " *
-                "$missing_plotly.  If you're offline, try `PlotlyLight.preset.source.local!()`."
+            @test only(report["errors"]) == "PlotlyLight couldn't draw this plot: Plotly isn't loaded on the page."
 
             # Another script (e.g. MathJax) fails to load: the plot still draws
             missing_extra = file_url(joinpath(mktempdir(), "no-mathjax.js"))

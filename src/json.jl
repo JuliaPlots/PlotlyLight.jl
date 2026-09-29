@@ -65,46 +65,51 @@ json(io::IO, x::Pair) = json_join(io, (x,), '{', '}', json_member)
 json_member(io::IO, (k, v)) = (json(io, string(k)); print(io, ':'); json(io, v))
 
 
-#------------------------------------------------------------------------------# compression
-# Multiple ways to compress data with plotly:
-#
-# 1) Ranges can be reduced to start/step: x --> x0 and dx
-# 2) Arrays can use Base64 encoding with any of DTYPES e.g. (x: data) --> (x: { bdata: "...", dtype: "float32"})
-# 3) E.g. DecompressionStream("zstd") in browser, TranscodingStreams for compression on Julia side
+#------------------------------------------------------------------------------# TypedArray
+# Plotly.js has a "TypedArraySpec": { bdata, dtype, ?shape } for base64-encoded typed arrays
 
-# smallest-to-largest
 const INT_DTYPES = (UInt8, Int8, UInt16, Int16, UInt32, Int32)
-const FLOAT_DTYPES = (Float32, Float64)
+const FLOAT_DTYPES = (Float32, Float64)  # Float16 not yet supported by TypedArraySpec
 const DTYPES = (INT_DTYPES..., FLOAT_DTYPES...)
 
-function _bdata(x::AbstractVecOrMat, T)
-    (bdata = base64encode(T.(permutedims(x))), dtype=lowercase(string(T)), shape=join(size(x), ','))
-end
+# Can type `T` represent number `x` (within acceptable error tolerances)?
+_fits(T, x; rtol=0.0, atol=0.0, nans=true) = isapprox(Float64(x), T(x); rtol, atol, nans)
 
-# Can type `T` represent `x` within allowable rtol/atol
-_fits(T, x; rtol=0.0, atol=0.0, nans=true) = isapprox(Float64(x), T(x); rtol, atol, nans=true)
-
-# `kw` passes to isapprox(...; kw...) for narrowing float data
-function bdata(x::AbstractVecOrMat{<:Real}; rtol=0.0, atol=0.0)
-    (isempty(x) || eltype(x) <: Bool) && return x
+# Smallest DTYPE that can represent every value in `x`, or `nothing` if plotly.js can't decode `x` as a typed array
+function min_type(x::AbstractArray; rtol=0.0, atol=0.0)
+    (isempty(x) || ndims(x) > 3 || !(eltype(x) <: Real) || eltype(x) <: Bool) && return nothing
     if all(isinteger, x)  # isinteger implies isfinite
         (a, b) = extrema(x)
         i = findfirst(T -> typemin(T) ≤ a && b ≤ typemax(T), INT_DTYPES)
-        isnothing(i) || return _bdata(x, INT_DTYPES[i])
+        isnothing(i) || return INT_DTYPES[i]
     end
     i = findfirst(T -> all(v -> _fits(T, v; rtol, atol), x), FLOAT_DTYPES)
-    _bdata(x, FLOAT_DTYPES[i])
+    FLOAT_DTYPES[i]
 end
 
-function bdata!(trace::Config; kw...)
-    for (k, v) in trace
-        if v isa Config
-            bdata!(v; kw...)
-        elseif v isa AbstractVecOrMat
-            trace[k] = bdata(v; kw...)
-        end
-    end
-    trace
+_bdata(x) = base64encode(permutedims(x, ndims(x):-1:1))  # row-major, as plotly.js reads it
+_dtype(x) = lowercase(string(eltype(x)))
+_shape(x) = join(size(x), ',')
+
+# plotly.js TypedArraySpec for `x`, or `x` itself if plotly.js can't decode it as a typed array
+function typed_array(x; rtol=0.0, atol=0.0)
+    T = min_type(x; rtol, atol)
+    isnothing(T) && return x
+    y = eltype(x) == T ? x : T.(x)
+    (; bdata=_bdata(y), dtype=_dtype(y), shape=_shape(y))
 end
 
-bdata!(p::Plot; kw...) = foreach(tr -> bdata!(tr; kw...))
+# In case you want the Plot object to keep your original data
+struct TypedArray
+    x::AbstractArray
+    rtol::Float64
+    atol::Float64
+    TypedArray(x, rtol=0.0, atol=0.0) = new(x, rtol, atol)
+end
+
+json(io::IO, o::TypedArray) = json(io, typed_array(o.x; o.rtol, o.atol))
+
+#------------------------------------------------------------------------------# Compress
+struct Compressed
+    x
+end

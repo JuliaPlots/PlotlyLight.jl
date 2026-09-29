@@ -18,7 +18,7 @@
 - 🌐 Use the [Plotly.js Javascript documentation](https://plotly.com/javascript/) directly. No magic syntax.
 - 📂 Set deeply-nested keys easily, e.g. `myplot.layout.xaxis.title.font.family = "Arial"`.
 - 📊 The Same [built-in themes](https://plotly.com/python/templates/) as Plotly's python package.
-- 🗜️ Large numeric arrays are sent as compact binary, so plots download and display faster.  `PlotlyLight.compress` shrinks them further.
+- 🗜️ Wrap large numeric arrays in `TypedArray` to send them as compact binary, so plots download and display faster.
 
 <br><br>
 
