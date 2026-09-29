@@ -5,7 +5,7 @@ Templates are set by using the `preset.template.<template>!` family of functions
 ```@example templates
 using PlotlyLight
 
-keys(PlotlyLight.preset.template)
+PlotlyLight.preset.template
 ```
 
 We'll use the following plot to demonstrate each template:
@@ -95,7 +95,7 @@ plt  # hide
 
 ## Custom Template
 
-To create your own template, simply provide any `JSON3`-writeable object to `PlotlyLight.settings.layout.template`.  Here's an example:
+To create your own template, simply provide a `Config` (or any `AbstractDict`/`NamedTuple`) to `PlotlyLight.settings.layout.template`.  Here's an example:
 
 ```@example templates
 my_template = Config()
