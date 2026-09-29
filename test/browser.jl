@@ -104,6 +104,9 @@ recreate(html) = """<div id="out"></div><script>
     }
 </script>"""
 
+# Browsers without `Uint8Array.fromBase64` (before Chrome 140, Firefox 133, Safari 18.2)
+no_from_base64(html) = "<script>delete Uint8Array.fromBase64;</script>" * html
+
 # Hosts that insert the HTML but never run its scripts (e.g. an untrusted notebook)
 no_js(html) = """<div id="out"></div><script>document.getElementById("out").innerHTML = $(payload(html));</script>"""
 
@@ -117,11 +120,13 @@ else
         tricky = ["say \"hi\"", "back\\slash", "new\nline", "</script><b>x</b>", "</script x", "a<br>b", "😀", "tab\there"]
         y = 45 .+ (1:200) ./ 1e5
         text = [tricky; string.("p", 8:200)]
-        z = reshape(1.0:300, 3, 100)
+        z = Float64.(reshape(repeat(1:6, 50), 3, 100))  # compresses, and rows differ from columns
         img = reshape(UInt8.(1:24), 2, 4, 3)  # rows × columns × rgb
         p = plot.scatter(x = 1:200, y = y, text = text)(plot.heatmap(z = z))(plot.image(z = img))
         p_typed = plot.scatter(x = TypedArray(1:200), y = TypedArray(y), text = text)(plot.heatmap(z = TypedArray(z)))(
             plot.image(z = TypedArray(img)))
+        p_compressed = plot.scatter(x = Compressed(1:200), y = Compressed(y), text = Compressed(text))(
+            plot.heatmap(z = Compressed(z)))(plot.image(z = Compressed(img)))
 
         # `f()` with default settings, local plotly.js, and `kw` overrides
         function with_defaults(f; kw...)
@@ -149,10 +154,12 @@ else
         end
 
         for (name, host) in ["static page" => static, "AMD (require.js) page" => amd, "Pluto" => pluto,
-                             "re-created scripts" => recreate]
+                             "re-created scripts" => recreate, "no Uint8Array.fromBase64" => no_from_base64]
             @testset "$name" begin
                 drew(render(chrome, host(html(p))))
                 drew(render(chrome, host(html(p_typed))))
+                @test occursin(".arrayBuffer()", html(p_compressed)) && occursin(".json()", html(p_compressed))
+                drew(render(chrome, host(html(p_compressed))))
             end
         end
 
@@ -165,6 +172,12 @@ else
             report = render(chrome, join(map(_ -> html(p), 1:3)))
             drew(report; n=3)
             @test report["plotly_scripts"] == 1
+        end
+
+        @testset "Compressed Float16 (Float16Array)" begin
+            report = render(chrome, html(plot.scatter(y = Compressed(Float16[0.5, 1.5, 2.5]))))
+            @test isempty(report["errors"])
+            @test only(only(report["plots"]))["y"] == [0.5, 1.5, 2.5]
         end
 
         @testset "saved file (html_page)" begin

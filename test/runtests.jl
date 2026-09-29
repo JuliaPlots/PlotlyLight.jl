@@ -93,6 +93,50 @@ end
     @test min_type([0.1, 0.2]; atol=1e-5) == Float32
 end
 
+@testset "Compressed" begin
+    # The bytes inside the JS expression, decompressed in Julia
+    function decompressed(js)
+        bytes = base64decode(match(r"\)\(\"([A-Za-z0-9+/=]+)\"\)\)", js)[1])  # `)("<base64>"))`
+        out = Vector{UInt8}(undef, 10^6)
+        n = Ref{Culong}(length(out))
+        ret = ccall((:uncompress, PlotlyLight.libz), Cint, (Ptr{UInt8}, Ref{Culong}, Ptr{UInt8}, Culong), out, n, bytes, length(bytes))
+        ret == 0 || error("zlib's `uncompress` failed with code $ret")
+        resize!(out, n[])
+    end
+
+    # Numeric arrays: JS typed arrays of their own eltype, or (e.g. Int64) the smallest DTYPE that holds them
+    js = json(Compressed(repeat([1.5, 2.5], 1000); level=6))
+    @test occursin("new DecompressionStream(\"deflate\")", js) && occursin("new Float64Array(", js)
+    @test sizeof(js) < sizeof(json(repeat([1.5, 2.5], 1000))) / 10
+    @test reinterpret(Float64, decompressed(js)) == repeat([1.5, 2.5], 1000)
+    @test reinterpret(Float64, decompressed(json(Compressed([0.1, 0.2]; level=0)))) == [0.1, 0.2]  # level 0: stored
+    @test occursin("new Float16Array(", json(Compressed(Float16[0.5])))
+    @test occursin("new Float32Array(", json(Compressed(Float32[0.5])))
+    js = json(Compressed([-1, 300]))
+    @test occursin("new Int16Array(", js) && reinterpret(Int16, decompressed(js)) == [-1, 300]
+    # Matrices and 3-d arrays: row-major, nested into rows
+    z = [1 2 3; 4 5 6]
+    js = json(Compressed(z))
+    @test occursin("return rows(x, [2,3]);", js) && decompressed(js) == vec(permutedims(z))
+    a = reshape(1:8, 2, 2, 2)
+    js = json(Compressed(a))
+    @test occursin("return rows(x, [2,2,2]);", js) && decompressed(js) == vec(permutedims(a, (3, 2, 1)))
+    @test occursin(".arrayBuffer()", html(plot.scatter(y=Compressed(zeros(1000)))))
+
+    # Everything else: JSON
+    x = Config(y = repeat([1.5, 2.5], 1000), text = fill("</script>", 1000))
+    js = json(Compressed(x; level=6))
+    @test occursin(".json()", js)
+    @test sizeof(js) < sizeof(json(x)) / 10
+    @test String(decompressed(js)) == json(x)
+    @test String(decompressed(json(Compressed(["a", "b"])))) == "[\"a\",\"b\"]"
+    @test String(decompressed(json(Compressed([true, false])))) == "[true,false]"  # no JS array of Bools
+    @test String(decompressed(json(Compressed(Int[])))) == "[]"
+    @test Compressed([1.0]) isa Compressed{Vector{Float64}}
+    @test Compressed(1).level == settings.compression_level
+    @test_throws "level must be 0 to 9" Compressed(1; level=10)
+end
+
 #-----------------------------------------------------------------------------# Plot methods
 @testset "Plot methods" begin
     p = plot.scatter(x=1:10)

@@ -9,9 +9,10 @@ using OrderedCollections: OrderedDict
 using EasyConfig: Config
 using Cobweb: Cobweb, h, Node
 using Base64: base64encode
+using Zlib_jll: libz
 
 #-----------------------------------------------------------------------------# exports
-export Config, TypedArray, typed_array, preset, Plot, plot
+export Config, TypedArray, typed_array, Compressed, preset, Plot, plot
 
 #-----------------------------------------------------------------------------# plotly.js artifact
 artifact(x...) = joinpath(artifact"plotly_artifacts", x...)

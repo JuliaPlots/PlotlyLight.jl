@@ -71,6 +71,10 @@ json_member(io::IO, (k, v)) = (json(io, string(k)); print(io, ':'); json(io, v))
 const INT_DTYPES = (UInt8, Int8, UInt16, Int16, UInt32, Int32)
 const FLOAT_DTYPES = (Float32, Float64)  # Float16 not yet supported by TypedArraySpec
 const DTYPES = (INT_DTYPES..., FLOAT_DTYPES...)
+const JS_ARRAYS = Dict(
+    (T => string(titlecase(string(T)), "Array") for T in DTYPES)...,
+    Float16 => "Float16Array"  # Not supported through TypedArraySpec
+)
 
 # Can type `T` represent number `x` (within acceptable error tolerances)?
 _fits(T, x; rtol=0.0, atol=0.0, nans=true) = isapprox(Float64(x), T(x); rtol, atol, nans)
@@ -87,7 +91,8 @@ function min_type(x::AbstractArray; rtol=0.0, atol=0.0)
     FLOAT_DTYPES[i]
 end
 
-_bdata(x) = base64encode(permutedims(x, ndims(x):-1:1))  # row-major, as plotly.js reads it
+_rowmajor(x) = permutedims(x, ndims(x):-1:1)  # plotly.js reads arrays row-major
+_bdata(x) = base64encode(_rowmajor(x))
 _dtype(x) = lowercase(string(eltype(x)))
 _shape(x) = join(size(x), ',')
 
@@ -109,7 +114,70 @@ end
 
 json(io::IO, o::TypedArray) = json(io, typed_array(o.x; o.rtol, o.atol))
 
-#------------------------------------------------------------------------------# Compress
-struct Compressed
-    x
+#------------------------------------------------------------------------------# Compressed
+# Number arrays:
+# bytes -> zlib -> base64 -> DecompressionStream("deflate") -> ArrayBuffer -> JSArray -> reshape
+
+# Fallback for everything else:
+# json string -> zlib -> base64 -> DecompressionStream -> Response.json()
+
+# Julia: compress via zlib.compress2; Browser: decompress via `DecompressionStream("deflate")`
+# It uses `await`, so it only works inside an async script (PlotlyLight draws plots in async script)
+struct Compressed{T}
+    x::T
+    level::Int  # zlib compression level: 0 (none) to 9 (smallest)
+    function Compressed(x::T; level::Integer=6) where {T}
+        0 ≤ level ≤ 9 || throw(ArgumentError("`Compressed` level must be 0 to 9.  Found $level."))
+        new{T}(x, level)
+    end
 end
+
+# zlib format (what `DecompressionStream("deflate")` reads)
+function zlib_compress(x::AbstractVector{UInt8}, level::Integer)
+    n = Culong(length(x))
+    d = Ref(@ccall libz.compressBound(n::Culong)::Culong)
+    out = Vector{UInt8}(undef, d[])
+    ret = @ccall libz.compress2(out::Ptr{UInt8}, d::Ref{Culong}, x::Ptr{UInt8}, n::Culong, level::Cint)::Cint
+    ret == 0 || error("zlib compress2 failed with code $ret")
+    resize!(out, d[])
+end
+
+# JS: base64 `b` of zlib-compressed bytes, decompressed into a `Response`
+const INFLATE_JS = "new Response(new Blob([Uint8Array.fromBase64?.(b) ?? Uint8Array.from(atob(b), c => c.charCodeAt(0))])" *
+    ".stream().pipeThrough(new DecompressionStream(\"deflate\")))"
+
+# JS: the flat, row-major typed array `x` nested into rows of subarrays (as plotly.js reads matrices and 3-d arrays)
+_reshape_js(dims) = length(dims) == 1 ?
+    "return x;" :
+    """
+    const rows = (x, dims) => Array.from({length: dims[0]}, (_, i) => {
+        const n = x.length / dims[0], row = x.subarray(i * n, (i + 1) * n);
+        return dims.length == 2 ? row : rows(row, dims.slice(1));
+    });
+    return rows(x, $(json(collect(dims))));
+    """
+
+# Numeric arrays become JS typed arrays: their own eltype where JS has an array of it, otherwise (e.g. Int64) the
+# smallest DTYPE that holds every value.  (Bools, empty arrays, etc. that no DTYPE holds are compressed as JSON.)
+function inflate_js(c::Compressed{<:AbstractArray{<:Real}})
+    T = haskey(JS_ARRAYS, eltype(c.x)) ? eltype(c.x) : min_type(c.x)
+    isnothing(T) && return inflate_json(c)
+    y = convert(Array{T}, _rowmajor(c.x))
+    b64 = base64encode(zlib_compress(reinterpret(UInt8, vec(y)), c.level))
+    RawJS("""
+    (await (async b => {
+        const x = new $(JS_ARRAYS[T])(await $INFLATE_JS.arrayBuffer());
+        $(_reshape_js(size(c.x)))
+    })("$b64"))
+    """)
+end
+
+# Everything else is compressed as JSON
+inflate_js(c::Compressed) = inflate_json(c)
+
+function inflate_json(c::Compressed)
+    b64 = base64encode(zlib_compress(codeunits(json(c.x)), c.level))
+    RawJS("""(await (b => $INFLATE_JS.json())("$b64"))""")
+end
+
+json(io::IO, c::Compressed) = json(io, inflate_js(c))
