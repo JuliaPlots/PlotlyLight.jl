@@ -9,22 +9,30 @@ using Cobweb: h
 using PlotlyLight: find_chrome, file_url
 
 #-----------------------------------------------------------------------------# rendering
-# Collects what happened on the page after the plots have had time to draw (`_fullData`: data after plotly.js decoded
-# any typed arrays).  Base64 so the JSON survives Chrome's `--dump-dom` HTML escaping.
-const REPORT_JS = """<script>setTimeout(() => {
+# Collects what happened on the page once every plot has drawn or shown an error (`_fullData`: data after plotly.js
+# decoded any typed arrays).  Plots whose scripts never run never settle, so the report waits at most 10s (Chrome's
+# virtual time, which keeps pace with real time while the page is busy and skips ahead when it's idle; `dump_dom`'s
+# budget is 15s).  Base64 so the JSON survives Chrome's `--dump-dom` HTML escaping.
+const REPORT_JS = """<script>(() => {
     const all = sel => [...document.querySelectorAll(sel)];
     const arr = a => a == null ? null : Array.from(a, v => ArrayBuffer.isView(v) || Array.isArray(v) ? arr(v) : v);
-    const report = {
-        plots: all(".js-plotly-plot").map(p => p._fullData.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z), customdata: arr(t.customdata)}))),
-        fallbacks: all(".plotlylight-plot-div").filter(d => d.textContent.includes("Loading PlotlyLight.jl plot")).length,
-        errors: all(".plotlylight-plot-div pre").map(e => e.textContent),
-        plotly_scripts: all("script[src*='plotly']").length,
+    const settled = divs => divs.length > 0 && divs.every(d => d._fullData || d.querySelector("pre"));
+    const report = () => {
+        const report = {
+            plots: all(".js-plotly-plot").map(p => p._fullData.map(t => ({x: arr(t.x), y: arr(t.y), text: arr(t.text), z: arr(t.z), customdata: arr(t.customdata)}))),
+            fallbacks: all(".plotlylight-plot-div").filter(d => d.textContent.includes("Loading PlotlyLight.jl plot")).length,
+            errors: all(".plotlylight-plot-div pre").map(e => e.textContent),
+            plotly_scripts: all("script[src*='plotly']").length,
+        };
+        const pre = document.createElement("pre");
+        pre.id = "report";
+        pre.textContent = btoa(unescape(encodeURIComponent(JSON.stringify(report))));
+        document.body.appendChild(pre);
     };
-    const pre = document.createElement("pre");
-    pre.id = "report";
-    pre.textContent = btoa(unescape(encodeURIComponent(JSON.stringify(report))));
-    document.body.appendChild(pre);
-}, 3000)</script>"""
+    const t0 = Date.now();
+    const check = () => settled(all(".plotlylight-plot-div")) || Date.now() - t0 > 10000 ? report() : setTimeout(check, 50);
+    check();
+})()</script>"""
 
 # The report from rendering `body` (HTML) in headless Chrome
 function render(chrome, body; head="")
