@@ -105,7 +105,7 @@ end
     end
 
     # Numeric arrays: JS typed arrays of their own eltype, or (e.g. Int64) the smallest DTYPE that holds them
-    js = json(Compressed(repeat([1.5, 2.5], 1000); level=6))
+    js = json(Compressed(repeat([1.5, 2.5], 1000)))
     @test occursin("new DecompressionStream(\"deflate\")", js) && occursin("new Float64Array(", js)
     @test sizeof(js) < sizeof(json(repeat([1.5, 2.5], 1000))) / 10
     @test reinterpret(Float64, decompressed(js)) == repeat([1.5, 2.5], 1000)
@@ -125,7 +125,7 @@ end
 
     # Everything else: JSON
     x = Config(y = repeat([1.5, 2.5], 1000), text = fill("</script>", 1000))
-    js = json(Compressed(x; level=6))
+    js = json(Compressed(x))
     @test occursin(".json()", js)
     @test sizeof(js) < sizeof(json(x)) / 10
     @test String(decompressed(js)) == json(x)
@@ -133,7 +133,7 @@ end
     @test String(decompressed(json(Compressed([true, false])))) == "[true,false]"  # no JS array of Bools
     @test String(decompressed(json(Compressed(Int[])))) == "[]"
     @test Compressed([1.0]) isa Compressed{Vector{Float64}}
-    @test Compressed(1).level == settings.compression_level
+    @test Compressed(1).level == 6
     @test_throws "level must be 0 to 9" Compressed(1; level=10)
 end
 

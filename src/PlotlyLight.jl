@@ -119,6 +119,8 @@ end
 
 #-----------------------------------------------------------------------------# NewPlot
 # PlotlyLight representation of: <script>Plotly.newPlot("$id", $data, $layout, $config)</script>
+# Also includes some JS to load each of `sources` only once, no matter how many plots are on a page
+
 struct NewPlot
     plot::Plot
     id::String
