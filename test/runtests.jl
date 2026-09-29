@@ -122,6 +122,16 @@ end
     js = json(Compressed(a))
     @test occursin("return rows(x, [2,2,2]);", js) && decompressed(js) == vec(permutedims(a, (3, 2, 1)))
     @test occursin(".arrayBuffer()", html(plot.scatter(y=Compressed(zeros(1000)))))
+    # Numbers with gaps (`missing`/`nothing`): NaN in a Float32Array (where every other value fits) or Float64Array
+    js = json(Compressed([1.0, missing, 3.0]))
+    @test occursin("new Float32Array(", js) && isequal(reinterpret(Float32, decompressed(js)), Float32[1, NaN, 3])
+    js = json(Compressed([0.1, nothing]))
+    @test occursin("new Float64Array(", js) && isequal(reinterpret(Float64, decompressed(js)), [0.1, NaN])
+    @test occursin("new Float64Array(", json(Compressed([Int64(2)^40 + 1, missing])))
+    js = json(Compressed(Union{Missing, Int}[1 2; missing 4]))
+    @test occursin("return rows(x, [2,2]);", js) && isequal(reinterpret(Float32, decompressed(js)), Float32[1, 2, NaN, 4])
+    @test String(decompressed(json(Compressed(Union{Missing, Bool}[true, missing])))) == "[true,null]"  # Bools stay Bools
+    @test String(decompressed(json(Compressed([missing, missing])))) == "[null,null]"
     # Bools: one byte each, read back as JS `true`/`false`
     js = json(Compressed([true, false, true]))
     @test occursin("v => v === 1", js) && decompressed(js) == [1, 0, 1]
@@ -158,6 +168,10 @@ end
     with_settings(compression=(level=6, rtol=1e-5, atol=0.0, n=100)) do
         @test occursin("new Float32Array(", html(plot.scatter(y=rand(200))))
         @test occursin("new Float32Array(", json(Compressed([Int64(2)^40 + 1, 0])))
+        @test occursin("new Float32Array(", json(Compressed([0.1, missing])))
+    end
+    with_settings(compression=(level=6, rtol=0.0, atol=0.0, n=100)) do
+        @test occursin("new Float64Array(", html(plot.scatter(y=[missing; rand(199)])))  # arrays with gaps too
     end
     @test occursin("new Float64Array(", json(Compressed([Int64(2)^40 + 1, 0])))
     with_settings(compression=(level=0, rtol=0.0, atol=0.0, n=1)) do
@@ -299,8 +313,31 @@ end
     @test collect(settings.js_deps) == [:plotly => PlotlyLight.PLOTLY_URL, :mathjax => PlotlyLight.MATHJAX_URL]  # plotly.js first
     delete!(settings.js_deps, :mathjax)
 
+    # compression: on!/off! set `settings.compression`
+    @test isnothing(preset.compression.on!())
+    @test settings.compression == (level=6, rtol=0.0, atol=0.0, n=1000)
+    @test occursin("DecompressionStream", html(plot.scatter(y=rand(1000))))
+    @test !occursin("DecompressionStream", html(plot.scatter(y=rand(999))))
+    preset.compression.on!(level=1, rtol=1e-5, n=10)
+    @test settings.compression == (level=1, rtol=1e-5, atol=0.0, n=10)
+    @test occursin("new Float32Array(", html(plot.scatter(y=rand(10))))
+    @test_throws "`level` must be 0 to 9.  Found 10." preset.compression.on!(level=10)
+    @test settings.compression.level == 1  # unchanged by the error
+    @test isnothing(preset.compression.off!())
+    @test settings.compression == PlotlyLight.Settings().compression
+    @test !occursin("DecompressionStream", html(plot.scatter(y=rand(1000))))
+
+    # display: fullscreen! styles the plot's div, and default! restores it
+    preset.display.fullscreen!()
+    @test occursin("style=\"height:100vh; width:100vw\"", html(plot.scatter(y=1:3)))
+    @test isnothing(preset.display.default!())
+    @test repr("text/html", settings.div) == repr("text/html", PlotlyLight.Settings().div)
+    s = html(plot.scatter(y=1:3))
+    @test !occursin("100vh", s) && occursin("class=\"plotlylight-plot-div\"", s)
+
     # Discoverable with tab completion
-    @test propertynames(preset) == (:template, :source, :display)
+    @test propertynames(preset) == (:compression, :template, :source, :display)
+    @test propertynames(preset.compression) == (:off!, :on!)
     @test :plotly_dark! in propertynames(preset.template)
 end
 

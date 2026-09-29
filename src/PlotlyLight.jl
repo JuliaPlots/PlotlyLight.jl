@@ -212,7 +212,17 @@ function set_plotly_source!(src)
     nothing
 end
 
+function compression_on!(; level=6, rtol=0.0, atol=0.0, n=1000)
+    0 ≤ level ≤ 9 || throw(ArgumentError("Compression `level` must be 0 to 9.  Found $level."))
+    settings.compression = (; level, rtol, atol, n)
+    nothing
+end
+
 preset = (
+    compression = (
+        off! = () -> (settings.compression = Settings().compression; nothing),
+        on! = compression_on!
+    ),
     template = (
         none!           = () -> (delete!(settings.layout, :template); nothing),
         ggplot2!        = () -> template!(:ggplot2),

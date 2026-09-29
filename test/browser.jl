@@ -159,6 +159,15 @@ else
             @test heatmap["customdata"] == [b[1, :], b[2, :]]  # rows
         end
 
+        @testset "Compressed gaps (missing/nothing) draw like JSON's null" begin
+            gappy = [1.0, missing, 3.0, 4.0, missing, 2.0, nothing, 5.0]
+            gappy_z = Union{Missing, Float64}[1 missing 3; 4 5 missing]
+            png(p) = PlotlyLight.image(p, "png"; chrome)
+            @test png(plot.scatter(y = gappy)) == png(plot.scatter(y = Compressed(gappy)))
+            @test png(plot.heatmap(z = gappy_z)) == png(plot.heatmap(z = Compressed(gappy_z)))
+            @test png(plot.scatter(y = gappy)) ≠ png(plot.scatter(y = replace(gappy, missing => 0.0, nothing => 0.0)))  # (gaps show)
+        end
+
         @testset "Compressed Float16 (Float16Array)" begin
             report = render(chrome, html(plot.scatter(y = Compressed(Float16[0.5, 1.5, 2.5]))))
             @test isempty(report["errors"])

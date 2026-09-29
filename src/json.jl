@@ -158,17 +158,30 @@ _reshape_js(dims; slice="subarray") = length(dims) == 1 ?
     return rows(x, $(json(collect(dims))));
     """
 
+# JS: `y` (a row-major Array of one of JS_ARRAYS's eltypes) as that typed array, nested into rows for `dims`
+function typed_js(y::Array, dims, level)
+    b64 = base64encode(zlib_compress(reinterpret(UInt8, vec(y)), level))
+    RawJS("""
+    (await (async b => {
+        const x = new $(JS_ARRAYS[eltype(y)])(await $INFLATE_JS.arrayBuffer());
+        $(_reshape_js(dims))
+    })("$b64"))
+    """)
+end
+
 function inflate_js(c::Compressed{<:AbstractArray{<:Real}}; rtol=0.0, atol=0.0)
     T = haskey(JS_ARRAYS, eltype(c.x)) ? eltype(c.x) : min_type(c.x; rtol, atol)
     isnothing(T) && return inflate_json(c)
-    y = convert(Array{T}, _rowmajor(c.x))
-    b64 = base64encode(zlib_compress(reinterpret(UInt8, vec(y)), c.level))
-    RawJS("""
-    (await (async b => {
-        const x = new $(JS_ARRAYS[T])(await $INFLATE_JS.arrayBuffer());
-        $(_reshape_js(size(c.x)))
-    })("$b64"))
-    """)
+    typed_js(convert(Array{T}, _rowmajor(c.x)), size(c.x), c.level)
+end
+
+# Numbers with gaps (`missing`/`nothing`): a float typed array with NaN in the gaps (plotly.js treats NaN like null).
+# Float32 if that holds every other value within `rtol`/`atol`, otherwise Float64.
+function inflate_js(c::Compressed{<:AbstractArray{<:Union{Missing, Nothing, Real}}}; rtol=0.0, atol=0.0)
+    Base.nonnothingtype(nonmissingtype(eltype(c.x))) <: Bool && return inflate_json(c)  # Bools, or no values at all
+    isgap(v) = ismissing(v) || isnothing(v)
+    F = all(v -> isgap(v) || _fits(Float32, v; rtol, atol), c.x) ? Float32 : Float64
+    typed_js(map(v -> isgap(v) ? F(NaN) : F(v), _rowmajor(c.x)), size(c.x), c.level)
 end
 
 # Bools: one byte each (zlib shrinks the 0s and 1s to about a bit each), read back as `true`/`false`
@@ -183,7 +196,7 @@ function inflate_js(c::Compressed{<:AbstractArray{Bool}}; kw...)
     """)
 end
 
-# Everything else is compressed as JSON
+# Everything else is compressed as JSON.  This handles repetitive values well (Dates, categorical data)
 inflate_js(c::Compressed; kw...) = inflate_json(c)
 
 function inflate_json(c::Compressed)
