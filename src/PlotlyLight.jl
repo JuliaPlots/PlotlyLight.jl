@@ -8,7 +8,7 @@ using Random: RandomDevice
 using OrderedCollections: OrderedDict
 using EasyConfig: Config
 using Cobweb: Cobweb, h, Node
-using Base64: base64encode
+using Base64: base64encode, base64decode
 using Zlib_jll: libz
 
 #-----------------------------------------------------------------------------# exports
@@ -23,17 +23,25 @@ const SCHEMA_FILE = artifact("plot-schema.json")
 
 const PLACEHOLDER = h.div(
     h.p("Loading PlotlyLight.jl plot..."),
-    h.p("If this remains, PlotlyJS failed to load.", style="color:red")
+    h.p("If this remains, PlotlyJS failed to load.")
 )
 
 const MATHJAX_URL = "https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"
+
+#-----------------------------------------------------------------------------# InlineScript
+# A script whose code is written into the page, rather than loaded from a URL (e.g. for standalone HTML files)
+struct InlineScript
+    path::String
+end
+Base.show(io::IO, ::MIME"text/html", s::InlineScript) =
+    print(io, "<script>", replace(read(s.path, String), r"</(script)"i => s"<\\/\1"), "</script>")  # can't end the <script> early
 
 #-----------------------------------------------------------------------------# Settings
 Base.@kwdef mutable struct Settings
     div::Node           = h.div(; class="plotlylight-plot-div")
     layout::Config      = Config()
     config::Config      = Config(responsive=true, displaylogo=false)
-    js_deps::OrderedDict{Symbol, String} = OrderedDict(:plotly => PLOTLY_URL)
+    js_deps::OrderedDict{Symbol, Union{String, InlineScript}} = OrderedDict(:plotly => PLOTLY_URL)
 end
 settings::Settings = Settings()
 
@@ -70,8 +78,6 @@ end
 
 Base.:(==)(a::Plot, b::Plot) = all(getfield(a,f) == getfield(b,f) for f in fieldnames(Plot))
 
-save(p::Plot, file::AbstractString) = open(io -> show(io, MIME("text/html"), html_page(p)), file, "w")
-save(file::AbstractString, p::Plot) = save(p, file)
 
 (p::Plot)(; kw...) = p(Config(kw))
 (p::Plot)(data::Config) = (push!(p.data, data); return p)
@@ -103,6 +109,7 @@ apply(p::Plot, s::Settings) = apply!(merge!(Plot(), p), s)
 #------------------------------------------------------------------------------# includes
 include("json.jl")
 include("Schema.jl")
+include("images.jl")
 
 #-----------------------------------------------------------------------------# plot
 function plot(; layout = Config(), config=Config(), type=:scatter, kw...)
@@ -159,9 +166,11 @@ plot_id() = "plotlylight-" * join(rand(RandomDevice(), 'a':'z', 10))
 
 # The plot's div and NewPlot (which loads the scripts)
 function html_div(o::Plot, id=plot_id())
+    deps = collect(values(settings.js_deps))
     h.div(class="plotlylight-parent",
+        filter(d -> d isa InlineScript, deps)...,
         settings.div(PLACEHOLDER; id),
-        NewPlot(apply(o, settings), id, collect(values(settings.js_deps)))
+        NewPlot(apply(o, settings), id, filter(d -> d isa String, deps))
     )
 end
 
@@ -224,7 +233,8 @@ preset = (
     source = (
         none!       = () -> (delete!(settings.js_deps, :plotly); nothing),
         cdn!        = () -> plotly_source!(PLOTLY_URL),
-        local!      = () -> plotly_source!(artifact("plotly.min.js"))
+        local!      = () -> plotly_source!(artifact("plotly.min.js")),
+        standalone! = () -> plotly_source!(InlineScript(artifact("plotly.min.js")))
     ),
     display = (
         fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),

@@ -6,19 +6,7 @@ using PlotlyLight, Test, JSON, Base64
 using PlotlyLight: settings, json
 using Cobweb: h
 
-function find_chrome()
-    haskey(ENV, "CHROME") && return ENV["CHROME"]
-    for c in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
-              "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-              raw"C:\Program Files\Google\Chrome\Application\chrome.exe",
-              raw"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]
-        path = isabspath(c) ? (isfile(c) ? c : nothing) : Sys.which(c)
-        isnothing(path) || return path
-    end
-    return nothing
-end
-
-file_url(path) = "file://" * replace(Sys.iswindows() ? "/" * replace(abspath(path), '\\' => '/') : abspath(path), " " => "%20")
+using PlotlyLight: find_chrome, file_url
 
 #-----------------------------------------------------------------------------# rendering
 # Collects what happened on the page after the plots have had time to draw (`_fullData`: data after plotly.js decoded
@@ -40,25 +28,9 @@ const REPORT_JS = """<script>setTimeout(() => {
 
 # The report from rendering `body` (HTML) in headless Chrome
 function render(chrome, body; head="")
-    dir = mktempdir()
-    file = joinpath(dir, "page.html")
+    file = joinpath(mktempdir(), "page.html")
     write(file, "<!doctype html><html><head><meta charset=\"utf-8\">$head</head><body>$body$REPORT_JS</body></html>")
-    cmd = `$chrome --headless=new --no-sandbox --disable-gpu --no-first-run --user-data-dir=$(joinpath(dir, "profile"))
-        --allow-file-access-from-files --virtual-time-budget=15000 --dump-dom $(file_url(file))`
-    p = open(pipeline(cmd; stderr=devnull))
-    timer = Timer(_ -> kill(p), 120)
-    dom = IOBuffer()
-    try
-        while !eof(p)  # Chrome sometimes lingers after dumping the DOM, so stop reading at `</html>`
-            line = readline(p; keep=true)
-            write(dom, line)
-            occursin("</html>", line) && break
-        end
-    finally
-        close(timer)
-        kill(p)
-    end
-    m = match(r"<pre id=\"report\">([A-Za-z0-9+/=]*)</pre>", String(take!(dom)))
+    m = match(r"<pre id=\"report\">([A-Za-z0-9+/=]*)</pre>", PlotlyLight.dump_dom(file; chrome, timeout=120))
     isnothing(m) && error("No report from Chrome (the page's scripts may not have run)")
     return JSON.parse(String(base64decode(m[1])))
 end
@@ -178,6 +150,25 @@ else
             report = render(chrome, html(plot.scatter(y = Compressed(Float16[0.5, 1.5, 2.5]))))
             @test isempty(report["errors"])
             @test only(only(report["plots"]))["y"] == [0.5, 1.5, 2.5]
+        end
+
+        @testset "saving images" begin
+            dir = mktempdir()
+            q = plot.scatter(y = Compressed(y))(plot.bar(y = TypedArray(1:10)))
+            q.layout.title.text = "Title 😀 & <b>bold</b>"
+            svg = read(PlotlyLight.save(q, joinpath(dir, "p.svg"); width=400, height=300), String)
+            @test startswith(svg, "<svg") && occursin("width=\"400\"", svg) && occursin("height=\"300\"", svg)
+            @test occursin("Title 😀 &amp; <tspan style=\"font-weight:bold\">bold</tspan>", svg)
+            png = read(PlotlyLight.save(q, joinpath(dir, "p.png"); width=400, height=300, scale=2))
+            @test png[1:8] == [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+            @test ntoh.(reinterpret(UInt32, png[17:24])) == [800, 600]  # IHDR: width, height
+            @test read(PlotlyLight.save(q, joinpath(dir, "p.jpg")))[1:3] == [0xff, 0xd8, 0xff]
+            webp = read(PlotlyLight.save(q, joinpath(dir, "p.webp")))
+            @test webp[1:4] == b"RIFF" && webp[9:12] == b"WEBP"
+            @test startswith(String(PlotlyLight.image(q, "svg"; chrome)), "<svg")
+            # plotly.js's errors are reported
+            @test_throws "plotly.js couldn't make the image: notDefined is not defined" PlotlyLight.image(
+                Plot(Config(y = PlotlyLight.RawJS("notDefined"))), "svg")
         end
 
         @testset "saved file (html_page)" begin

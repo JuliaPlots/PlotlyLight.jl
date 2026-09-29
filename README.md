@@ -19,6 +19,7 @@
 - 📂 Set deeply-nested keys easily, e.g. `myplot.layout.xaxis.title.font.family = "Arial"`.
 - 📊 The Same [built-in themes](https://plotly.com/python/templates/) as Plotly's python package.
 - 🗜️ Wrap large arrays in `TypedArray` (compact binary) or `Compressed` (zlib), so plots download and display faster.
+- 🖼️ Save plots as SVG, PNG, JPEG, or WebP with `PlotlyLight.save(p, "plot.svg")`, using the Chrome, Chromium, or Edge you have.
 
 <br><br>
 

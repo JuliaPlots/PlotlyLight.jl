@@ -212,10 +212,17 @@ end
     path1 = joinpath(dir, "test.html")
     path2 = joinpath(dir, "test2.html")
     p = Plot(Config(x = 1:10))
-    PlotlyLight.save(p, path1)
+    @test PlotlyLight.save(p, path1) == path1
     PlotlyLight.save(path2, p)
     @test isfile(path1)
     @test isfile(path2)
+    # Images (made in headless Chrome: see browser.jl)
+    @test_throws "only apply to images" PlotlyLight.save(p, path1; width=100)
+    @test_throws "`gif` isn't an image format" PlotlyLight.image(p, "gif")
+    @test_throws "No Chrome, Chromium, or Edge found" PlotlyLight.image(p, "svg"; chrome=nothing)
+    withenv("CHROME" => "/path/to/chrome") do
+        @test PlotlyLight.find_chrome() == "/path/to/chrome"
+    end
 end
 
 @testset "other" begin
