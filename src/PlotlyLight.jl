@@ -205,12 +205,16 @@ Base.display(::REPL.REPLDisplay, o::Plot) = Cobweb.preview(html_page(o))
 # Templates are inserted verbatim (they're JSON already)
 template!(t) = (settings.layout.template = RawJS(read(artifact("templates", "$t.json"), String)); nothing)
 
-# plotly.js loads before the other scripts, which may use it
-plotly_source!(src) = (settings.js_deps = OrderedDict(:plotly => src, filter(p -> p[1] != :plotly, settings.js_deps)...); nothing)
+# forces :plotly to load first
+function set_plotly_source!(src)
+    settings.js_deps[:plotly] = src
+    sort!(settings.js_deps, by = k -> k != :plotly)
+    nothing
+end
 
 preset = (
     template = (
-        none!           = () -> (haskey(settings.layout, :template) && delete!(settings.layout, :template); nothing),
+        none!           = () -> (delete!(settings.layout, :template); nothing),
         ggplot2!        = () -> template!(:ggplot2),
         gridon!         = () -> template!(:gridon),
         plotly!         = () -> template!(:plotly),
@@ -224,12 +228,13 @@ preset = (
     ),
     source = (
         none!       = () -> (delete!(settings.js_deps, :plotly); nothing),
-        cdn!        = () -> plotly_source!(PLOTLY_URL),
-        local!      = () -> plotly_source!(artifact("plotly.min.js")),
+        cdn!        = () -> set_plotly_source!(PLOTLY_URL),
+        local!      = () -> set_plotly_source!(artifact("plotly.min.js")),
     ),
     display = (
-        fullscreen!     = () -> (settings.div.style = "height:100vh; width:100vw"),
-        mathjax!        = () -> (settings.js_deps[:mathjax] = MATHJAX_URL; nothing),
+        default!    = () -> (settings.div = h.div(; class="plotlylight-plot-div"); nothing),
+        fullscreen! = () -> (settings.div.style = "height:100vh; width:100vw"),
+        mathjax!    = () -> (settings.js_deps[:mathjax] = MATHJAX_URL; nothing),
     )
 )
 
