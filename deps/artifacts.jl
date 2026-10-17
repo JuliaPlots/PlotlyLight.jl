@@ -2,11 +2,11 @@ using Pkg
 Pkg.activate(@__DIR__)
 Pkg.instantiate()
 
-using ArtifactUtils, JSON3
+using ArtifactUtils, JSON
 using Pkg.Artifacts: archive_artifact
 
 version = get(ENV, "PLOTLY_VERSION") do
-    JSON3.read(download("https://api.github.com/repos/plotly/plotly.js/releases/latest")).name
+    JSON.parsefile(download("https://api.github.com/repos/plotly/plotly.js/releases/latest"))["name"]
 end
 
 

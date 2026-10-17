@@ -1,10 +1,9 @@
 # Plotly.js Source
 
-Change how the plotly.js script gets loaded in the produced html via `preset.source.<option>!()`.
+Change where the plotly.js script gets loaded from via `preset.source.<option>!()`.
 
 ```julia
-preset.source.none!()       # Don't include the script.
-preset.source.cdn!()        # Use the official plotly.js CDN.
-preset.source.local!()      # Use a local version of the plotly.js script.
-preset.source.standalone!() # Copy-paste the plotly.js script into the html output.
+preset.source.none!()       # Don't load it (e.g. the page already has plotly.js).
+preset.source.cdn!()        # Use the official plotly.js CDN (the default).
+preset.source.local!()      # Use the copy of plotly.js that comes with PlotlyLight (works offline on this computer).
 ```

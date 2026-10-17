@@ -11,7 +11,7 @@ The core JS function that generates a plot is `Plotly.newPlot(data, layout, conf
 !!! note "Plotly.js Schema"
     The Plotly.js specification is available as a [JSON schema](https://json-schema.org) (raw JSON [here](https://api.plot.ly/v2/plot-schema?format=json&sha1=%27%27)).
 
-    PlotlyLight includes this schema as `PlotlyLight.plotly.schema` if you wish to investigate it.
+    PlotlyLight bundles this schema.  After `using JSON`, it's available as `PlotlyLight.schema()`, e.g. `PlotlyLight.schema().traces.scatter.attributes`.
 
 ## What is a Trace?
 

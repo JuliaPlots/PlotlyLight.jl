@@ -25,6 +25,18 @@ jobs:
         exclude:
           - os: macOS-latest
             arch: x86
+          - os: macOS-latest
+            arch: x64
+        include:
+          - os: macOS-latest
+            arch: aarch64
+            version: 'lts'
+          - os: macOS-latest
+            arch: aarch64
+            version: '1'
+          - os: macOS-latest
+            arch: aarch64
+            version: 'nightly'
     steps:
       - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
