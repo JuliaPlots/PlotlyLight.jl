@@ -45,7 +45,7 @@ end
     @test json(:x) == "\"x\""
     # Nested values get the same treatment
     @test json([1.0, NaN, Inf]) == "[1,null,null]"
-    @test json(Config(z = [1 2; 3 4], r = 1//2, s = "</script>")) == "{\"z\":[[1,2],[3,4]],\"r\":0.5,\"s\":\"\\u003c/script\\u003e\"}"
+    @test json((z = [1 2; 3 4], r = 1//2, s = "</script>")) == "{\"z\":[[1,2],[3,4]],\"r\":0.5,\"s\":\"\\u003c/script\\u003e\"}"
     @test json(reshape(1:8, 2, 2, 2)) == "[[[1,5],[3,7]],[[2,6],[4,8]]]"  # x[i][j][k] == x[i,j,k]
     @test json(π) == "3.141592653589793"
     @test json(DateTime(2021,1,1,0,0,0,5)) == "\"2021-01-01T00:00:00.005\""
@@ -164,7 +164,7 @@ end
         @test occursin("\"y\":[", s)  # fewer than n elements
         @test occursin("new Float64Array(", html(plot.scatter(y=rand(200))))
     end
-    @test p.data[1].x isa Vector{Int} && p.data[1].marker.color isa Vector{Int}  # the plot itself is unchanged
+    @test p.data[1].x isa UnitRange{Int} && p.data[1].marker.color isa UnitRange{Int}  # the plot itself is unchanged
     # Tolerances are passed to `min_type`, for automatic and explicit `Compressed`
     with_settings(compression=(level=6, rtol=1e-5, atol=0.0, n=100)) do
         @test occursin("new Float32Array(", html(plot.scatter(y=rand(200))))

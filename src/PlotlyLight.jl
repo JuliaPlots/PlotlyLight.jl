@@ -6,7 +6,7 @@ using REPL
 using Random: RandomDevice
 
 using OrderedCollections: OrderedDict
-using EasyConfig: Config
+using EasyConfig: Config, deepmerge, deepmerge!
 using Cobweb: Cobweb, h, Node
 using Base64: base64encode, base64decode
 using Zlib_jll: libz
@@ -58,16 +58,6 @@ function check_attributes(type; kw...)
     attrs = schema()["traces"][string(t)]["attributes"]
     foreach(k -> haskey(attrs, string(k)) || @warn("`$t` does not have attribute `$k`."), keys(kw))
 end
-
-# `b` merged into `a`, recursing into nested dicts rather than replacing them
-function deepmerge!(a::Config, b::AbstractDict)
-    foreach(pairs(b)) do (k, v)
-        old = get(a, k, nothing)
-        a[k] = v isa AbstractDict ? deepmerge!(old isa Config ? old : Config(), v) : v
-    end
-    return a
-end
-deepmerge(a, b) = deepmerge!(deepmerge!(Config(), a), b)
 
 trace_type(trace) = get(trace, :type, :scatter)
 
@@ -201,7 +191,7 @@ function Base.show(io::IO, ::MIME"text/plain", o::Plot)
     n = length(o.data)
     print(io, "PlotlyLight.Plot with ", n, n == 1 ? " trace" : " traces")
     for (i, trace) in enumerate(o.data)
-        attrs = filter(!=(:type), collect(keys(trace)))
+        attrs = sort!(filter(!=(:type), collect(keys(trace))))
         print(io, "\n  ", i, ". ", trace_type(trace), isempty(attrs) ? "" : ": " * join(attrs, ", "))
     end
 end

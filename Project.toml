@@ -26,13 +26,16 @@ Artifacts = "1"
 Base64 = "1"
 Cobweb = "0.7"
 Dates = "1"
-EasyConfig = "0.1"
+EasyConfig = "0.2"
 JSON = "1"
 OrderedCollections = "1.8.2"
 REPL = "1"
 Random = "1"
 Zlib_jll = "1"
 julia = "1.10"
+
+[sources]
+EasyConfig = {url = "https://github.com/joshday/EasyConfig.jl", rev = "jd/dev"}
 
 [extras]
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
