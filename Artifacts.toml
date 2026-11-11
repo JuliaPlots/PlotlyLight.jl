@@ -1,7 +1,7 @@
 [plotly_artifacts]
-git-tree-sha1 = "5c09583793b0ad2f87803bc683fc17b54e50d7ba"
+git-tree-sha1 = "16b79d5c45487458d4076c07fc226775da68ceef"
 
     [[plotly_artifacts.download]]
-    sha256 = "3e6cee173ac7d8b9410b3de0de9900ec25717181f348ecc17b471c3182b7c1b0"
-    size = 1968712
-    url = "https://github.com/JuliaPlots/PlotlyLight.jl/releases/download/artifacts/plotly_artifacts-5c09583793b0ad2f87803bc683fc17b54e50d7ba.tar.gz"
+    sha256 = "b315e797c6ae9004d517753fcd4021c0aa40fd31c0e2a91247d4ebfd60064f60"
+    size = 1970509
+    url = "https://github.com/JuliaPlots/PlotlyLight.jl/releases/download/artifacts/plotly_artifacts-16b79d5c45487458d4076c07fc226775da68ceef.tar.gz"
